@@ -53,6 +53,13 @@ def _error_response(
 
 
 async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    if exc.status_code == 404 and request.url.path.startswith("/api/"):
+        return _error_response(
+            request,
+            status_code=404,
+            code="api_endpoint_not_found",
+            message="This API endpoint is not available in the running app. Restart TalentLens from the project folder and try again.",
+        )
     try:
         message = HTTPStatus(exc.status_code).phrase
     except ValueError:

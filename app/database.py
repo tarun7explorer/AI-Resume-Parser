@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.exceptions import ApiError
-from app.schema_auth import AuthenticatedUser, AuthSession
+from app.schema_auth import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
 RESUME_BUCKET_ID = "private-resumes"
@@ -54,7 +54,6 @@ class SupabaseApi:
         json_body: Any | None = None,
         content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
-        auth_failure: tuple[int, str, str] = (401, "invalid_access_token", "The access token is invalid or expired"),
         return_headers: bool = False,
     ) -> Any:
         request_headers = self._headers(access_token)
@@ -88,14 +87,10 @@ class SupabaseApi:
         except ValueError:
             pass
 
-        if response.status_code == 401 and path == "/auth/v1/token":
-            status, code, message = auth_failure
-            raise ApiError(status, code, message)
         if response.status_code in (401, 403) and access_token:
-            status, code, message = auth_failure
             if response.status_code == 403:
                 raise ApiError(403, "permission_denied", "You do not have permission to perform this action")
-            raise ApiError(status, code, message)
+            raise ApiError(401, "invalid_access_token", "The access token is invalid or expired")
         if response.status_code == 401:
             raise ApiError(503, "supabase_configuration_error", "Authentication and data services are not configured correctly")
         if response.status_code == 403 or provider_code == "42501":
@@ -113,42 +108,6 @@ class SupabaseApi:
             )
             raise ApiError(503, "supabase_unavailable", "Authentication and data services are temporarily unavailable")
         raise ApiError(400, "invalid_data_request", "The request could not be processed")
-
-    async def sign_in(self, email: str, password: str) -> AuthSession:
-        try:
-            payload = await self._send(
-                "POST",
-                "/auth/v1/token",
-                params={"grant_type": "password"},
-                json_body={"email": email, "password": password},
-                auth_failure=(401, "invalid_credentials", "Email or password is incorrect"),
-            )
-        except ApiError as exc:
-            if exc.status_code in (400, 401):
-                raise ApiError(401, "invalid_credentials", "Email or password is incorrect") from None
-            raise
-        try:
-            return AuthSession.model_validate(payload)
-        except ValidationError:
-            raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response") from None
-
-    async def refresh_session(self, refresh_token: str) -> AuthSession:
-        try:
-            payload = await self._send(
-                "POST",
-                "/auth/v1/token",
-                params={"grant_type": "refresh_token"},
-                json_body={"refresh_token": refresh_token},
-                auth_failure=(401, "invalid_refresh_token", "The refresh token is invalid or expired"),
-            )
-        except ApiError as exc:
-            if exc.status_code in (400, 401):
-                raise ApiError(401, "invalid_refresh_token", "The refresh token is invalid or expired") from None
-            raise
-        try:
-            return AuthSession.model_validate(payload)
-        except ValidationError:
-            raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response") from None
 
     async def verify_access_token(self, access_token: str) -> AuthenticatedUser:
         payload = await self._send("GET", "/auth/v1/user", access_token=access_token)
@@ -215,9 +174,6 @@ class SupabaseApi:
         if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
             raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response")
         return payload
-
-    async def sign_out(self, access_token: str) -> None:
-        await self._send("POST", "/auth/v1/logout", access_token=access_token)
 
     async def rpc(self, function: str, access_token: str, values: Mapping[str, Any]) -> Any:
         return await self._send(

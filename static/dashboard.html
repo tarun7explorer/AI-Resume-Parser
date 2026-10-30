@@ -1,35 +1,56 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Recruiter screening overview"><title>Overview · TalentLens</title>
-  <link rel="stylesheet" href="/static/css/global.css"><link rel="stylesheet" href="/static/css/dashboard.css">
-  <script src="/static/js/api.js" defer></script><script src="/static/js/dashboard.js" defer></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Private, evidence-based resume screening demo">
+  <title>TalentLens · Resume screening</title>
+  <link rel="stylesheet" href="/static/css/global.css">
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="stylesheet" href="/static/css/demo.css">
+  <script src="/static/js/api.js" defer></script>
+  <script src="/static/js/dashboard.js" defer></script>
 </head>
 <body class="app-page">
-  <header class="topbar">
-    <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true">T</span><span>talent<span class="brand-accent">lens</span></span></a>
-    <nav class="main-nav" aria-label="Main navigation"><a class="active" href="/dashboard" aria-current="page">Overview</a><a href="/screening">Jobs &amp; screenings</a></nav>
-    <div class="topbar-actions"><label class="sr-only" for="organization-select">Organization</label><select id="organization-select" class="organization-select"></select><span id="user-email" class="user-email"></span><button id="sign-out" class="button button-quiet" type="button">Sign out</button></div>
+  <header class="topbar demo-topbar">
+    <a class="brand" href="/" aria-label="TalentLens home"><span class="brand-mark" aria-hidden="true">T</span><span>talent<span class="brand-accent">lens</span></span></a>
+    <nav class="main-nav" aria-label="Main navigation"><a class="active" href="#screening" aria-current="page">Resume screening</a><a href="#how-it-works">How it works</a></nav>
+    <span class="demo-badge">Private demo</span>
   </header>
-  <main class="page-shell">
-    <section class="page-heading"><div><p class="eyebrow">Recruiter workspace</p><h1>Good work starts with a clear view.</h1><p class="muted">Track open roles, candidate intake, and reviews in one place.</p></div><a class="button button-primary" href="/screening#new-job">Create a job <span aria-hidden="true">＋</span></a></section>
+  <main class="page-shell demo-shell">
+    <section class="page-heading demo-heading">
+      <div><p class="eyebrow">Evidence-based candidate review</p><h1>See the evidence behind every application.</h1><p class="muted">Compare resumes with a role, inspect cited evidence, and keep every hiring decision human-led.</p></div>
+    </section>
     <div id="page-notice" class="notice" role="alert" hidden></div>
-    <section id="dashboard-loading" class="loading-card" role="status">Loading your organization workspace…</section>
-    <section id="no-organization" class="empty-card" hidden><div class="empty-icon" aria-hidden="true">◎</div><h2>Your workspace is being set up</h2><p>No organization is linked to this recruiter account yet. Contact your administrator to finish setup.</p></section>
-    <div id="dashboard-content" hidden>
-      <section class="stat-grid" aria-label="Screening summary">
-        <article class="stat-card"><span class="stat-label">Active jobs</span><strong id="stat-jobs">—</strong><span class="stat-foot">Roles accepting candidates</span></article>
-        <article class="stat-card"><span class="stat-label">Candidates</span><strong id="stat-candidates">—</strong><span class="stat-foot">Profiles in your workspace</span></article>
-        <article class="stat-card stat-card-accent"><span class="stat-label">In progress</span><strong id="stat-progress">—</strong><span class="stat-foot">Waiting for review processing</span></article>
-        <article class="stat-card"><span class="stat-label">Needs attention</span><strong id="stat-attention">—</strong><span class="stat-foot">Failed or retryable</span></article>
-      </section>
-      <section class="dashboard-columns">
-        <article class="surface activity-surface"><div class="section-heading"><div><p class="eyebrow">Latest activity</p><h2>Recent screenings</h2></div><a class="text-link" href="/screening#history">View history <span aria-hidden="true">→</span></a></div><div id="recent-list" class="recent-list"></div></article>
-        <aside class="surface guidance-card"><div class="guidance-mark" aria-hidden="true">✳</div><p class="eyebrow">Human-led by design</p><h2>Every report is a starting point.</h2><p>Review the supporting evidence and uncertainty before making a decision. Scores are intended to help prioritize attention, not replace recruiter judgment.</p><a class="text-link" href="/screening">Open screening workspace <span aria-hidden="true">→</span></a></aside>
-      </section>
-      <p class="small muted dashboard-footnote">Queued and processing statuses update from the durable worker queue. Review provisional scores and cited evidence before making decisions.</p>
-    </div>
+    <section id="screening" class="demo-grid">
+      <article class="surface demo-form-card">
+        <div class="section-heading"><div><p class="eyebrow">Screening setup</p><h2>Describe the role</h2></div><span class="step-badge">01</span></div>
+        <form id="demo-form" class="form-stack">
+          <label for="job-description">Job description <span class="required">*</span></label>
+          <textarea id="job-description" name="job_description" rows="9" maxlength="100000" placeholder="Paste the role, responsibilities, required skills, and qualifications…"></textarea>
+          <div class="pdf-extract-row"><label class="button button-secondary file-button" for="job-description-pdf">Choose job-description PDF</label><input id="job-description-pdf" name="job_description_pdf" class="sr-only" type="file" accept="application/pdf,.pdf"><span id="job-pdf-name" class="small muted">Or paste the description above</span></div>
+          <div class="section-heading demo-resume-heading"><div><p class="eyebrow">Candidate intake</p><h2>Upload resumes</h2></div><span class="step-badge">02</span></div>
+          <p class="small muted">Select 1–5 PDF resumes. Each file can be up to 10 MiB.</p>
+          <label class="drop-zone" for="resume-files"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose PDF resumes</strong><span class="small muted">Files are processed separately</span><input id="resume-files" name="resume_files" type="file" accept="application/pdf,.pdf" multiple></label>
+          <div id="selected-files" class="selected-files" aria-live="polite"></div>
+          <label class="privacy-consent"><input id="privacy-acknowledged" type="checkbox" required><span>I have permission to process these resumes. Contact details are redacted before resume text is sent to the configured Groq analysis provider.</span></label>
+          <p class="privacy-note">Files and reports are not saved to an account or database. Results are returned only to this request and disappear when you leave or refresh this page. Do not upload resumes unless you are authorized to process them.</p>
+          <button id="start-screening" class="button button-primary button-wide" type="submit">Analyze resumes</button>
+        </form>
+      </article>
+      <aside id="how-it-works" class="surface demo-guidance">
+        <div class="guidance-mark" aria-hidden="true">✳</div><p class="eyebrow">Human-led by design</p><h2>Evidence first. Decisions stay yours.</h2>
+        <p>Python calculates versioned scores from validated evidence. AI extracts role requirements and candidate facts, but does not calculate scores or make hiring decisions.</p>
+        <ul><li>Review source quotes and page references.</li><li>Inspect possible hidden-text signals with context.</li><li>Profile links are detected but never fetched.</li><li>Scores are provisional review aids, not hiring recommendations.</li></ul>
+        <div class="privacy-boundary"><strong>Temporary by design</strong><span>No account is needed. This demo does not persist candidate data or screening reports.</span></div>
+      </aside>
+    </section>
+    <section id="results-section" class="surface demo-results" hidden>
+      <div class="section-heading"><div><p class="eyebrow">Screening results</p><h2>Review each candidate</h2></div><div class="demo-result-actions"><span id="result-count" class="count-pill"></span><button id="compare-selected" class="button button-secondary" type="button" disabled>Compare selected</button></div></div>
+      <div id="screening-results" class="demo-result-list" aria-live="polite"></div>
+      <div id="comparison-output" class="demo-comparison" hidden aria-live="polite"></div>
+    </section>
+    <p class="small muted demo-footnote">AI extraction can be incomplete or wrong. Review cited source evidence and the original resume before drawing conclusions.</p>
   </main>
 </body>
 </html>

@@ -103,29 +103,6 @@ tbody tr:last-child td { border-bottom: 0; }
 .empty-inline h3 { margin-bottom: .3rem; color: var(--ink); }
 .empty-inline p { margin-bottom: 0; font-size: .86rem; }
 .loading-inline { font-size: .88rem; }
-.auth-page { background: #f7f9f7; }
-.auth-layout { display: grid; min-height: 100vh; grid-template-columns: minmax(350px, .95fr) minmax(440px, 1.05fr); }
-.auth-story { position: relative; display: flex; min-height: 100vh; flex-direction: column; justify-content: space-between; overflow: hidden; padding: clamp(2rem, 5vw, 5rem); background: #154f40; color: white; }
-.auth-story::after { position: absolute; right: -170px; bottom: -240px; width: 600px; height: 600px; border: 1px solid #b6e0c72a; border-radius: 50%; box-shadow: 0 0 0 58px #b6e0c70b, 0 0 0 116px #b6e0c708; content: ""; }
-.brand-light { position: relative; z-index: 1; color: #fff; }
-.brand-light .brand-mark { background: #c2e8cf; color: #124c3c; }
-.brand-light .brand-accent { color: #bce2c9; }
-.story-copy { position: relative; z-index: 1; max-width: 560px; margin: auto 0; padding: 3rem 0; }
-.eyebrow-light { color: #aad5b8; }
-.story-copy h1 { max-width: 540px; margin: .7rem 0 1.1rem; font-size: clamp(2.5rem, 5vw, 4.3rem); line-height: 1.06; }
-.story-copy p:last-child { max-width: 470px; margin: 0; color: #d2e4d9; font-size: 1.05rem; }
-.story-foot { position: relative; z-index: 1; display: flex; align-items: center; gap: .7rem; color: #c1d9cb; font-size: .8rem; }
-.story-orbit { color: #c5e8d1; font-size: 1.4rem; }
-.auth-card-wrap { display: grid; place-items: center; padding: 2rem; }
-.auth-card { width: min(100%, 410px); }
-.auth-card h2 { margin: .25rem 0 .4rem; font-size: 2rem; }
-.auth-card .muted { margin-bottom: 1.4rem; }
-.auth-card .form-stack { gap: .65rem; }
-.auth-card .form-stack label { margin-top: .35rem; }
-.auth-card .button { margin-top: .65rem; }
-.auth-help { margin: 1.2rem 0 1.8rem; color: #63736c; font-size: .84rem; }
-.auth-privacy { border-top: 1px solid var(--line); padding-top: 1.15rem; }
-.mobile-brand { display: none; margin-bottom: 2.2rem; }
 @media (max-width: 960px) {
   .topbar { gap: 1rem; padding-right: 20px; padding-left: 20px; }
   .main-nav a { padding: 0 .55rem; font-size: .83rem; }
@@ -134,10 +111,6 @@ tbody tr:last-child td { border-bottom: 0; }
   .page-shell { padding-right: 20px; padding-left: 20px; }
 }
 @media (max-width: 700px) {
-  .auth-layout { display: block; min-height: 100vh; }
-  .auth-story { display: none; }
-  .auth-card-wrap { min-height: 100vh; padding: 1.5rem; }
-  .mobile-brand { display: block; }
   .topbar { position: relative; min-height: unset; flex-wrap: wrap; gap: .2rem 1rem; padding: .7rem 16px 0; }
   .topbar > .brand { padding: .2rem 0 .45rem; }
   .main-nav { order: 3; width: 100%; height: 43px; overflow-x: auto; }

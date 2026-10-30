@@ -19,9 +19,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 
-from app.api_auth import router as auth_router
 from app.api_candidates import router as candidates_router
+from app.api_demo import router as demo_router
 from app.api_jobs import router as jobs_router
+from app.api_organizations import router as organizations_router
 from app.api_screening import router as screening_router
 from app.config import Settings, get_settings
 from app.exceptions import (
@@ -85,7 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(Exception, unhandled_exception_handler)
     application.add_exception_handler(RequestValidationError, validation_exception_handler)
 
-    for router in (auth_router, jobs_router, candidates_router, screening_router):
+    for router in (demo_router, organizations_router, jobs_router, candidates_router, screening_router):
         application.include_router(router, prefix="/api/v1")
 
     if configured.cors_origins:
@@ -106,14 +107,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request.state.request_id = request_id
         started = time.perf_counter()
         try:
+            is_public_demo = request.url.path == "/api/v1/demo/screenings"
             is_upload = request.url.path.endswith("/screenings") or request.url.path.endswith("/jobs/parse-description")
+            request_limit = configured.resume_max_bytes * (6 if is_public_demo else 1) + 256 * 1024
             content_length = request.headers.get("content-length")
             if is_upload and content_length:
                 try:
                     declared_length = int(content_length)
                 except ValueError:
-                    declared_length = configured.resume_max_bytes + 1
-                if declared_length > configured.resume_max_bytes + 256 * 1024:
+                    declared_length = request_limit + 1
+                if declared_length > request_limit:
                     response = JSONResponse(
                         status_code=413,
                         content={"error": {
@@ -157,7 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+        return FileResponse(static_dir / "dashboard.html")
 
     @application.get("/dashboard", include_in_schema=False)
     async def dashboard_page() -> FileResponse:
@@ -165,11 +168,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.get("/screening", include_in_schema=False)
     async def screening_page() -> FileResponse:
-        return FileResponse(static_dir / "screening.html")
+        return FileResponse(static_dir / "dashboard.html")
 
     @application.get("/candidate", include_in_schema=False)
     async def candidate_page() -> FileResponse:
-        return FileResponse(static_dir / "candidate.html")
+        return FileResponse(static_dir / "dashboard.html")
 
     @application.get("/health", response_model=HealthResponse, tags=["operations"])
     async def health() -> HealthResponse:

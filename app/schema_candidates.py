@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schema_auth import _EMAIL_PATTERN
+_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 class CandidateCreateRequest(BaseModel):

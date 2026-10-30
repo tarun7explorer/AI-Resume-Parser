@@ -30,11 +30,19 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class AIProviderError(Exception):
-    def __init__(self, code: str, message: str, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.safe_message = message
         self.retryable = retryable
+        self.status_code = status_code
 
 
 def redact_personal_contact(text: str) -> str:
@@ -112,9 +120,13 @@ class GroqProvider:
 
     async def _completion(self, messages: list[dict[str, str]]) -> str:
         if self.settings.groq_api_key is None:
+            logger.error(
+                "Groq request not configured",
+                extra={"provider": "groq", "exception_type": "MissingCredential", "provider_status_code": None},
+            )
             raise AIProviderError(
                 "ai_provider_not_configured",
-                "Screening analysis is unavailable. Configure GROQ_API_KEY on the server.",
+                "Screening analysis is unavailable. Add GROQ_API_KEY to the server's .env file and restart TalentLens.",
                 retryable=False,
             )
         attempts = self.settings.ai_max_attempts
@@ -138,16 +150,75 @@ class GroqProvider:
                     timeout=httpx.Timeout(self.settings.ai_timeout_seconds, connect=5.0),
                     follow_redirects=False,
                 )
-            except (httpx.TimeoutException, httpx.NetworkError):
+            except httpx.TimeoutException as exc:
                 last_retryable = True
+                logger.warning(
+                    "Groq request timed out",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": type(exc).__name__,
+                        "provider_status_code": None,
+                        "attempt": attempt + 1,
+                    },
+                )
                 if attempt + 1 < attempts:
                     await asyncio.sleep(min(2**attempt, 3))
                     continue
-                raise AIProviderError("ai_provider_timeout", "The analysis provider timed out. The screening can be retried.", retryable=True) from None
-            except httpx.HTTPError:
-                raise AIProviderError("ai_provider_unavailable", "The analysis provider is unavailable.", retryable=True) from None
+                raise AIProviderError(
+                    "ai_provider_timeout",
+                    "Groq timed out while analyzing. Retry; if this continues, check the network and Groq service status.",
+                    retryable=True,
+                ) from None
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "Groq network request failed",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": type(exc).__name__,
+                        "provider_status_code": None,
+                        "attempt": attempt + 1,
+                    },
+                )
+                raise AIProviderError(
+                    "ai_provider_connection_failed",
+                    "TalentLens could not connect to Groq. Check the network connection and retry.",
+                    retryable=True,
+                ) from None
 
-            if response.status_code == 429 or response.status_code >= 500 or response.status_code in (408, 425):
+            if response.status_code == 429:
+                last_retryable = True
+                logger.warning(
+                    "Groq rate limit or quota response",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderHTTPError",
+                        "provider_status_code": response.status_code,
+                        "attempt": attempt + 1,
+                    },
+                )
+                if attempt + 1 < attempts:
+                    try:
+                        delay = min(max(float(response.headers.get("retry-after", "1")), 0.1), 5)
+                    except ValueError:
+                        delay = min(2**attempt, 3)
+                    await asyncio.sleep(delay)
+                    continue
+                raise AIProviderError(
+                    "ai_provider_rate_limited",
+                    "Groq rate limits or account quota were reached. Check Groq usage and rate limits, then retry after they reset.",
+                    retryable=True,
+                    status_code=response.status_code,
+                )
+            if response.status_code >= 500:
+                logger.warning(
+                    "Groq provider server error",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderHTTPError",
+                        "provider_status_code": response.status_code,
+                        "attempt": attempt + 1,
+                    },
+                )
                 last_retryable = True
                 if attempt + 1 < attempts:
                     try:
@@ -156,18 +227,125 @@ class GroqProvider:
                         delay = min(2**attempt, 3)
                     await asyncio.sleep(delay)
                     continue
-                raise AIProviderError("ai_provider_unavailable", "The analysis provider is temporarily unavailable. The screening can be retried.", retryable=True)
-            if response.status_code in (401, 403):
-                raise AIProviderError("ai_provider_auth_failed", "The server-side Groq credential was rejected. Check GROQ_API_KEY.", retryable=False)
+                raise AIProviderError(
+                    "ai_provider_unavailable",
+                    "Groq returned a temporary server error. Retry later; check Groq service status if it continues.",
+                    retryable=True,
+                    status_code=response.status_code,
+                )
+            if response.status_code in (408, 425):
+                logger.warning(
+                    "Groq provider transient response",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderHTTPError",
+                        "provider_status_code": response.status_code,
+                        "attempt": attempt + 1,
+                    },
+                )
+                last_retryable = True
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(min(2**attempt, 3))
+                    continue
+                raise AIProviderError(
+                    "ai_provider_timeout",
+                    "Groq could not complete the request in time. Retry; if this continues, check the network and Groq service status.",
+                    retryable=True,
+                    status_code=response.status_code,
+                )
+            if response.status_code == 401:
+                logger.error(
+                    "Groq rejected API credential",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderAuthenticationError",
+                        "provider_status_code": response.status_code,
+                    },
+                )
+                raise AIProviderError(
+                    "ai_provider_auth_failed",
+                    "Groq rejected GROQ_API_KEY (401). Replace it with an active Groq API key, then restart TalentLens.",
+                    retryable=False,
+                    status_code=response.status_code,
+                )
+            if response.status_code == 403:
+                logger.error(
+                    "Groq denied API credential access",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderAuthorizationError",
+                        "provider_status_code": response.status_code,
+                    },
+                )
+                raise AIProviderError(
+                    "ai_provider_forbidden",
+                    "Groq denied this key's access (403). Check the Groq account and key permissions.",
+                    retryable=False,
+                    status_code=response.status_code,
+                )
+            if response.status_code == 404:
+                logger.error(
+                    "Groq model or endpoint was not found",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderModelNotFoundError",
+                        "provider_status_code": response.status_code,
+                    },
+                )
+                raise AIProviderError(
+                    "ai_provider_model_not_found",
+                    "Groq did not recognize the configured model or endpoint (404). Check GROQ_MODEL against Groq's active model list.",
+                    retryable=False,
+                    status_code=response.status_code,
+                )
             if response.status_code >= 400:
-                raise AIProviderError("ai_provider_request_rejected", "The analysis provider rejected the request. Check its model configuration.", retryable=False)
+                logger.error(
+                    "Groq rejected request configuration",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderRequestError",
+                        "provider_status_code": response.status_code,
+                    },
+                )
+                raise AIProviderError(
+                    "ai_provider_request_rejected",
+                    f"Groq rejected the analysis request (HTTP {response.status_code}). Check GROQ_MODEL and the supported request options.",
+                    retryable=False,
+                    status_code=response.status_code,
+                )
             try:
                 body = response.json()
                 content = body["choices"][0]["message"]["content"]
             except (ValueError, KeyError, IndexError, TypeError):
-                raise AIProviderError("ai_provider_invalid_response", "The analysis provider returned an invalid response.", retryable=True) from None
+                logger.warning(
+                    "Groq returned a malformed success response",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderResponseError",
+                        "provider_status_code": response.status_code,
+                    },
+                )
+                raise AIProviderError(
+                    "ai_provider_invalid_response",
+                    "Groq returned a malformed analysis response. Retry; if it continues, check Groq service status.",
+                    retryable=True,
+                    status_code=response.status_code,
+                ) from None
             if not isinstance(content, str) or not content.strip():
-                raise AIProviderError("ai_provider_empty_response", "The analysis provider returned an empty response.", retryable=True)
+                logger.warning(
+                    "Groq returned an empty success response",
+                    extra={
+                        "provider": "groq",
+                        "exception_type": "ProviderResponseError",
+                        "provider_status_code": response.status_code,
+                    },
+                )
+                raise AIProviderError(
+                    "ai_provider_empty_response",
+                    "Groq returned an empty analysis response. Retry; if it continues, check Groq service status.",
+                    retryable=True,
+                    status_code=response.status_code,
+                )
             return content
         raise AIProviderError("ai_provider_unavailable", "The analysis provider is unavailable.", retryable=last_retryable)
 

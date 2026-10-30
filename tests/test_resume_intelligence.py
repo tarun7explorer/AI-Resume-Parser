@@ -18,6 +18,7 @@ from app.report_models import (
     CandidateAnalysisAI,
     EvidenceSpan,
     JobRequirements,
+    JobRequirementsAI,
     ProfileFact,
     RequirementAssessment,
 )
@@ -184,6 +185,58 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_provider_credential_fails_without_a_request(self) -> None:
+        calls = 0
+
+        async def unexpected_request(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json={})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(unexpected_request)) as http:
+            provider = GroqProvider(settings(groq_api_key=None), http)
+            with self.assertRaises(AIProviderError) as caught:
+                await provider._completion([{"role": "system", "content": "safe"}])
+
+        self.assertEqual(calls, 0)
+        self.assertEqual(caught.exception.code, "ai_provider_not_configured")
+        self.assertIn("GROQ_API_KEY", caught.exception.safe_message)
+
+    async def test_provider_authentication_failure_is_actionable(self) -> None:
+        async def unauthorized(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"error": {"message": "do not echo this provider detail"}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(unauthorized)) as http:
+            provider = GroqProvider(settings(groq_api_key="unit-test-placeholder", ai_max_attempts=1), http)
+            with self.assertRaises(AIProviderError) as caught:
+                await provider._completion([{"role": "system", "content": "safe"}])
+
+        self.assertEqual(caught.exception.code, "ai_provider_auth_failed")
+        self.assertEqual(caught.exception.status_code, 401)
+        self.assertIn("active Groq API key", caught.exception.safe_message)
+        self.assertNotIn("provider detail", caught.exception.safe_message)
+
+    async def test_provider_rate_limit_is_distinguished_and_logged_safely(self) -> None:
+        calls = 0
+
+        async def rate_limited(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(429, headers={"retry-after": "0"}, json={"error": {"message": "sensitive provider response"}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(rate_limited)) as http:
+            provider = GroqProvider(settings(groq_api_key="unit-test-placeholder", ai_max_attempts=2), http)
+            with patch("app.ai.asyncio.sleep", new=AsyncMock()), self.assertLogs("app.ai", level="WARNING") as logs:
+                with self.assertRaises(AIProviderError) as caught:
+                    await provider._completion([{"role": "user", "content": "safe"}])
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(caught.exception.code, "ai_provider_rate_limited")
+        self.assertEqual(caught.exception.status_code, 429)
+        self.assertEqual(logs.records[-1].provider_status_code, 429)
+        self.assertEqual(logs.records[-1].exception_type, "ProviderHTTPError")
+        self.assertNotIn("sensitive", " ".join(record.getMessage() for record in logs.records))
+
     async def test_provider_timeout_retries_are_bounded(self) -> None:
         calls = 0
 
@@ -200,7 +253,60 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
                     await provider._completion([{"role": "system", "content": "safe"}])
         self.assertEqual(calls, 2)
         self.assertEqual(caught.exception.code, "ai_provider_timeout")
+        self.assertIsNone(caught.exception.status_code)
         self.assertNotIn("sensitive", str(caught.exception))
+
+    async def test_provider_temporary_server_error_is_distinguished(self) -> None:
+        async def unavailable(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={"error": {"message": "private provider detail"}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(unavailable)) as http:
+            provider = GroqProvider(settings(groq_api_key="unit-test-placeholder", ai_max_attempts=1), http)
+            with self.assertRaises(AIProviderError) as caught:
+                await provider._completion([{"role": "user", "content": "safe"}])
+
+        self.assertEqual(caught.exception.code, "ai_provider_unavailable")
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertNotIn("private provider detail", caught.exception.safe_message)
+
+    async def test_malformed_provider_response_is_distinguished(self) -> None:
+        async def malformed(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"message": "private malformed body"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(malformed)) as http:
+            provider = GroqProvider(settings(groq_api_key="unit-test-placeholder", ai_max_attempts=1), http)
+            with self.assertRaises(AIProviderError) as caught:
+                await provider._completion([{"role": "user", "content": "safe"}])
+
+        self.assertEqual(caught.exception.code, "ai_provider_invalid_response")
+        self.assertEqual(caught.exception.status_code, 200)
+        self.assertNotIn("private malformed body", caught.exception.safe_message)
+
+    async def test_successful_provider_analysis_uses_the_configured_model(self) -> None:
+        import json
+
+        response_body = {
+            "required_skills": ["Python"],
+            "preferred_skills": [],
+            "experience_expectations": ["Build APIs"],
+            "responsibilities": [],
+            "qualifications": [],
+            "minimum_experience_years": None,
+        }
+        captured: dict[str, object] = {}
+
+        async def successful(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(response_body)}}]})
+
+        configured = settings(groq_api_key="unit-test-placeholder", groq_model="openai/gpt-oss-20b")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(successful)) as http:
+            provider = GroqProvider(configured, http)
+            result = await provider._structured(JobRequirementsAI, "Return JSON only.", "Synthetic test input.")
+
+        self.assertEqual(result.required_skills, ["Python"])
+        self.assertEqual(captured["model"], "openai/gpt-oss-20b")
+        self.assertEqual(captured["response_format"], {"type": "json_object"})
 
     async def test_invalid_structured_output_has_bounded_repair_attempts(self) -> None:
         calls = 0

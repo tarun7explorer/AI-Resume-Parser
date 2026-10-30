@@ -84,7 +84,9 @@ class QueueMigrationContracts(unittest.TestCase):
         self.assertIn("history-previous", script)
         self.assertIn("history-next", script)
         self.assertIn("retryable_failure", script)
-        self.assertIn("Compare selected", (ROOT / "static" / "screening.html").read_text(encoding="utf-8"))
+        public_dashboard = (ROOT / "static" / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("Compare selected", public_dashboard)
+        self.assertIn('id="comparison-output"', public_dashboard)
 
 
 class ApiHistoryTests(unittest.TestCase):

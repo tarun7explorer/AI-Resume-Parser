@@ -21,12 +21,14 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(response.headers.get("x-content-type-options"), "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers.get("content-security-policy", ""))
 
-    def test_root_page_is_served(self) -> None:
+    def test_root_page_serves_the_public_screening_dashboard(self) -> None:
         with TestClient(self.application) as client:
             response = client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Welcome back", response.text)
-        self.assertIn("sign-in-form", response.text)
+        self.assertIn('id="demo-form"', response.text)
+        self.assertIn('id="resume-files"', response.text)
+        self.assertNotIn("sign-in-form", response.text)
+        self.assertNotIn("Sign out", response.text)
 
 
 if __name__ == "__main__":
