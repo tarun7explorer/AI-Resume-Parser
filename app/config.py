@@ -144,18 +144,12 @@ class Settings(BaseSettings):
                 raise ValueError("SCREENING_WORKER_ENABLED requires GROQ_API_KEY")
 
         if self.app_env == "production":
-            if self.supabase_url is None or self.supabase_anon_key is None:
-                raise ValueError("production requires SUPABASE_URL and SUPABASE_ANON_KEY")
+            if self.groq_api_key is None:
+                raise ValueError("production requires GROQ_API_KEY for public screening")
             if any(urlsplit(origin).scheme != "https" for origin in self.cors_origins):
                 raise ValueError("production CORS_ORIGINS must use HTTPS")
             if self.supabase_url is not None and self.supabase_url.scheme != "https":
                 raise ValueError("production SUPABASE_URL must use HTTPS")
-            if not self.screening_worker_enabled:
-                raise ValueError("production requires SCREENING_WORKER_ENABLED=true")
-            if self.supabase_service_role_key is None:
-                raise ValueError("the screening worker requires SUPABASE_SERVICE_ROLE_KEY")
-            if self.groq_api_key is None:
-                raise ValueError("the screening worker requires GROQ_API_KEY")
         return self
 
     @property

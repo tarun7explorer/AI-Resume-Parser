@@ -1,55 +1,43 @@
 # TalentLens AI Resume Screening
 
-FastAPI and vanilla-JavaScript resume screening demo. The public dashboard accepts a job description and up to five PDF resumes without an account. It parses PDFs, optionally runs bounded OCR, asks Groq for structured requirement and evidence extraction, validates evidence against source pages, then calculates deterministic versioned scores in Python.
+TalentLens is a FastAPI application with a responsive vanilla-JavaScript dashboard. The public dashboard accepts a pasted or PDF job description and up to five PDF resumes. It extracts bounded PDF text, sends contact-redacted text to Groq for structured requirements and source evidence, validates that output against the models and extracted page text, then calculates versioned scores in Python. Groq does not calculate scores or make hiring decisions.
 
-Scores and integrity signals are provisional review aids. The system does not make hiring decisions.
+The result is provisional decision support. AI extraction can miss or misinterpret information. Review the cited page excerpts and original resume; never use the score as an automatic hiring decision.
 
-## Local setup
+## Run locally
 
-Use Python 3.12–3.14 and `uv`. If `uv` is not installed, run `winget install --id astral-sh.uv -e` from an elevated or permitted Windows terminal, then open a new CMD window. Set `GROQ_API_KEY` in your ignored local `.env` if you want to run real analysis. From Windows CMD:
+Requirements: Python 3.12–3.14 and `uv`.
 
-```bat
-cd /d D:\Resume-Parser
-if not exist uv.lock uv lock
+```powershell
+cd D:\Resume-Parser
 uv sync --frozen
-if not exist .env copy .env.example .env
-notepad .env
-uv run uvicorn app.main:app --reload --no-access-log --host 127.0.0.1 --port 8000
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-Open `http://127.0.0.1:8000`. `/health` is a process-liveness check. Run the application tests with:
+Set `GROQ_API_KEY` in the ignored local `.env`, then start without reload:
 
-```bat
-uv run pytest
+```powershell
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8010 --no-access-log
 ```
+
+Open `http://127.0.0.1:8010`; check `http://127.0.0.1:8010/health`. Choose another free port if 8010 is occupied. Run tests with `uv run pytest`.
 
 ## Public demo privacy and limits
 
-The demo endpoint is stateless. Resume PDFs, parsed text, and reports are not written to Supabase, a server-side session, or a file store. Each response goes only to the browser request that submitted those files; results remain in that page until it is refreshed or closed. The endpoint accepts at most five resumes per request, each up to 10 MiB, and limits requests by the server-observed client address.
+The demo is stateless: uploaded PDFs, extracted text, and reports are not saved to Supabase or a file store. The endpoint accepts 1–5 resumes, each up to 10 MiB, and applies a per-client request limit. Users must confirm they are authorized to process the resumes. Email addresses and phone numbers are redacted before text is sent to Groq; other resume and job-description content is sent to the configured provider. Review the provider's current terms before submitting real candidate data.
 
-Before submitting, the user must confirm they are authorized to process the resumes. The worker does not run for this flow. Contact details are redacted from resume text before text is sent to Groq, but other resume and job-description content is sent to the configured Groq API for analysis. Configure and review the provider account and terms before using real candidate data. If `GROQ_API_KEY` is missing or the provider is unreachable, analysis fails visibly; the application does not invent a report.
+PyMuPDF extracts selectable text. Scanned resumes may use bounded OCR for at most one page with a five-second page timeout when Tesseract and its Python dependencies are available. Profile links are detected but never fetched. PDF layout signals are only human-review cues.
 
-Profile URLs are parsed but never fetched. PDF layout signals are shown for human review and do not prove misconduct. The scores are calculated by deterministic Python rules after AI output and evidence have been validated.
+## Configuration and optional integrations
 
-## Environment variables
+The public demo requires the server-side `GROQ_API_KEY`; `GROQ_MODEL` defaults to `openai/gpt-oss-20b`. `.env.example` contains blank placeholders only. Keep `.env` and credentials out of Git.
 
-Copy `.env.example` to `.env`. The public demo needs `GROQ_API_KEY` and uses `GROQ_MODEL` (default `openai/gpt-oss-20b`). The Supabase variables are optional for the public demo and are still used by the existing tenant-scoped API and durable worker. Keep every real key in `.env`; never place it in browser code or commit it.
+The existing protected tenant APIs, Supabase persistence, and durable worker remain available. Supabase URL and anon key must be configured together for those APIs. Enabling `SCREENING_WORKER_ENABLED` also requires the Supabase service-role key and Groq key. The worker is disabled by default. NVIDIA configuration is unused.
 
-`SUPABASE_URL` and `SUPABASE_ANON_KEY` must be configured together for the protected tenant API. `SUPABASE_SERVICE_ROLE_KEY` is server-only and is required when the durable worker is enabled. `SCREENING_WORKER_ENABLED` defaults to `false`. `NVIDIA_API_KEY` is reserved and unused.
+PDF limits and OCR are configured by `RESUME_MAX_BYTES`, `PDF_MAX_PAGES`, `OCR_MAX_PAGES`, `OCR_TIMEOUT_SECONDS`, `OCR_LANGUAGE`, and `TESSERACT_CMD`. `AI_TIMEOUT_SECONDS` and `AI_MAX_ATTEMPTS` bound provider calls and repair attempts.
 
-PDF limits and OCR settings are bounded through `RESUME_MAX_BYTES`, `PDF_MAX_PAGES`, `OCR_MAX_PAGES`, `OCR_TIMEOUT_SECONDS`, `OCR_LANGUAGE`, and `TESSERACT_CMD`. Scanned PDFs need PyMuPDF, pytesseract, Pillow, and the Tesseract executable with the requested language data.
+## Deployment
 
-## Existing protected tenant API
+`render.yaml` deploys the FastAPI app with the worker disabled. Add `GROQ_API_KEY` in Render's secret environment settings for public screening. Render supplies `PORT`; the health check is `/health`. Configure Supabase credentials only if using the protected tenant APIs or worker.
 
-The public demo has no login, session, or account-management endpoints. The established multi-tenant jobs, history, report, deletion, and worker APIs remain available only through verified Supabase Auth bearer tokens and existing RLS policies; their authorization stays in place to protect persisted organization data. They are not used by the public demo dashboard. Resume storage remains private; no table or storage policy was made public. The public demo has no user account, organization, persistence, or cross-request result lookup.
-
-The ordered SQL migrations under `supabase/migrations/` remain the source for database setup. `supabase/schema.sql` is a generated snapshot and must not be applied in addition to those migrations. No migration is applied by this application.
-
-## Tests and verification
-
-```bat
-py -m compileall -q app
-py -m unittest discover -s tests -v
-```
-
-These tests use isolated HTTP mocks for provider integrations. They do not verify a live Supabase or Groq account.
+The ordered SQL migrations under `supabase/migrations/` remain the database setup source. `supabase/schema.sql` is a generated snapshot and should not be applied in addition to those migrations.

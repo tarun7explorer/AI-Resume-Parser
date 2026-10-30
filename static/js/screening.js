@@ -356,7 +356,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       tesseract_executable_missing: "OCR is unavailable; contact your workspace administrator.",
       ai_provider_not_configured: "AI processing is not configured; contact your workspace administrator.",
       ai_provider_auth_failed: "AI provider credentials need attention.",
-      ai_output_invalid: "The analysis could not be validated.",
+      ai_output_schema_invalid: "The AI response did not match the required format. Retry the screening.",
+      ai_output_evidence_invalid: "The AI returned evidence that did not match the extracted resume pages. Review the PDF text and retry.",
       attempts_exhausted: "Automatic attempts were exhausted.",
     };
     return messages[code] || "Processing needs attention.";

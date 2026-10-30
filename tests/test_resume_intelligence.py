@@ -126,6 +126,11 @@ class ExtractionAndEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_evidence(changed, doc(), reqs())
 
+    def test_exact_short_evidence_quote_is_valid(self) -> None:
+        candidate = analysis()
+        candidate.assessments[0].evidence[0] = EvidenceSpan(page=1, quote="Python")
+        validate_evidence(candidate, doc(), reqs())
+
     def test_extra_ai_fields_are_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             CandidateAnalysisAI.model_validate({"skills": [], "experience_projects": [], "education_qualifications": [], "assessments": [], "secret": "unexpected"})
@@ -325,7 +330,37 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
                     "untrusted fixture data",
                 )
         self.assertEqual(calls, 2)
-        self.assertEqual(caught.exception.code, "ai_output_invalid")
+        self.assertEqual(caught.exception.code, "ai_output_schema_invalid")
+
+    async def test_invalid_source_evidence_is_distinguished_and_retried(self) -> None:
+        import json
+
+        invalid = analysis().model_dump(mode="json")
+        invalid["assessments"][0]["evidence"][0]["quote"] = "Python expert"
+        provider = GroqProvider(settings(groq_api_key="unit-test-placeholder", ai_max_attempts=2), AsyncMock())
+        provider._completion = AsyncMock(side_effect=[json.dumps(invalid), json.dumps(invalid)])
+        with self.assertLogs("app.ai", level="WARNING") as logs:
+            with self.assertRaises(AIProviderError) as caught:
+                await provider.extract_candidate(doc(), reqs())
+        self.assertEqual(provider._completion.await_count, 2)
+        self.assertEqual(caught.exception.code, "ai_output_evidence_invalid")
+        self.assertNotIn("Python expert", " ".join(record.getMessage() for record in logs.records))
+
+    async def test_candidate_response_with_short_exact_quote_passes_full_provider_validation(self) -> None:
+        import json
+
+        candidate = analysis().model_dump(mode="json")
+        candidate["skills"][0]["evidence"][0]["quote"] = "Python"
+        candidate["assessments"][0]["evidence"][0]["quote"] = "Python"
+        provider = GroqProvider(settings(groq_api_key="unit-test-placeholder"), AsyncMock())
+        provider._completion = AsyncMock(return_value=json.dumps(candidate))
+        result = await provider.extract_candidate(doc(), reqs())
+        self.assertEqual(result.assessments[0].evidence[0].quote, "Python")
+
+    async def test_job_requirement_schema_defaults_omitted_empty_arrays(self) -> None:
+        parsed = JobRequirementsAI.model_validate_json('{"required_skills":["Python"]}')
+        self.assertEqual(parsed.required_skills, ["Python"])
+        self.assertEqual(parsed.preferred_skills, [])
 
     async def test_resume_prompt_treats_embedded_instructions_as_data(self) -> None:
         captured: dict[str, object] = {}

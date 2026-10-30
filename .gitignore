@@ -6,6 +6,7 @@
 *.key
 
 # Python and tooling
+node_modules/
 __pycache__/
 *.py[cod]
 *.pyo

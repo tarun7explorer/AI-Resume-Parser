@@ -33,14 +33,14 @@
           <p class="small muted">Select 1–5 PDF resumes. Each file can be up to 10 MiB.</p>
           <label class="drop-zone" for="resume-files"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose PDF resumes</strong><span class="small muted">Files are processed separately</span><input id="resume-files" name="resume_files" type="file" accept="application/pdf,.pdf" multiple></label>
           <div id="selected-files" class="selected-files" aria-live="polite"></div>
-          <label class="privacy-consent"><input id="privacy-acknowledged" type="checkbox" required><span>I have permission to process these resumes. Contact details are redacted before resume text is sent to the configured Groq analysis provider.</span></label>
+          <label class="privacy-consent"><input id="privacy-acknowledged" type="checkbox" required><span>I have permission to process these resumes. Resume text and the job description are sent to the configured Groq provider; email addresses and phone numbers are redacted first.</span></label>
           <p class="privacy-note">Files and reports are not saved to an account or database. Results are returned only to this request and disappear when you leave or refresh this page. Do not upload resumes unless you are authorized to process them.</p>
           <button id="start-screening" class="button button-primary button-wide" type="submit">Analyze resumes</button>
         </form>
       </article>
       <aside id="how-it-works" class="surface demo-guidance">
         <div class="guidance-mark" aria-hidden="true">✳</div><p class="eyebrow">Human-led by design</p><h2>Evidence first. Decisions stay yours.</h2>
-        <p>Python calculates versioned scores from validated evidence. AI extracts role requirements and candidate facts, but does not calculate scores or make hiring decisions.</p>
+        <p>Groq extracts candidate evidence and job requirements from the provided documents. Python validates cited evidence and calculates the provisional score using versioned rules.</p>
         <ul><li>Review source quotes and page references.</li><li>Inspect possible hidden-text signals with context.</li><li>Profile links are detected but never fetched.</li><li>Scores are provisional review aids, not hiring recommendations.</li></ul>
         <div class="privacy-boundary"><strong>Temporary by design</strong><span>No account is needed. This demo does not persist candidate data or screening reports.</span></div>
       </aside>
@@ -50,7 +50,7 @@
       <div id="screening-results" class="demo-result-list" aria-live="polite"></div>
       <div id="comparison-output" class="demo-comparison" hidden aria-live="polite"></div>
     </section>
-    <p class="small muted demo-footnote">AI extraction can be incomplete or wrong. Review cited source evidence and the original resume before drawing conclusions.</p>
+    <p class="small muted demo-footnote">AI extraction can be incomplete or wrong. Review cited evidence and the original resume; scores support human review and never make hiring decisions.</p>
   </main>
 </body>
 </html>

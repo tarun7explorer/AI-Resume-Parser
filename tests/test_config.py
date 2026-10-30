@@ -31,6 +31,15 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertFalse(settings.debug)
 
+    def test_production_screening_requires_groq_but_not_supabase(self) -> None:
+        with self.assertRaises(ValidationError):
+            Settings(_env_file=None, app_env="production")
+        settings = Settings(_env_file=None, app_env="production", groq_api_key="provider-test-key")
+        self.assertFalse(settings.debug)
+        self.assertIsNotNone(settings.groq_api_key)
+        self.assertIsNone(settings.supabase_url)
+        self.assertFalse(settings.screening_worker_enabled)
+
     def test_rejects_wildcard_cors(self) -> None:
         with self.assertRaises(ValidationError):
             Settings(_env_file=None, cors_origins=["*"])

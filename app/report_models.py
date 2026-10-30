@@ -16,11 +16,11 @@ class StrictModel(BaseModel):
 
 
 class JobRequirementsAI(StrictModel):
-    required_skills: list[str] = Field(max_length=40)
-    preferred_skills: list[str] = Field(max_length=40)
-    experience_expectations: list[str] = Field(max_length=20)
-    responsibilities: list[str] = Field(max_length=30)
-    qualifications: list[str] = Field(max_length=20)
+    required_skills: list[str] = Field(default_factory=list, max_length=40)
+    preferred_skills: list[str] = Field(default_factory=list, max_length=40)
+    experience_expectations: list[str] = Field(default_factory=list, max_length=20)
+    responsibilities: list[str] = Field(default_factory=list, max_length=30)
+    qualifications: list[str] = Field(default_factory=list, max_length=20)
     minimum_experience_years: float | None = Field(default=None, ge=0, le=60)
 
 
@@ -54,10 +54,10 @@ class RequirementAssessment(StrictModel):
 
 
 class CandidateAnalysisAI(StrictModel):
-    skills: list[ProfileFact] = Field(max_length=60)
-    experience_projects: list[ProfileFact] = Field(max_length=30)
-    education_qualifications: list[ProfileFact] = Field(max_length=20)
-    assessments: list[RequirementAssessment] = Field(max_length=160)
+    skills: list[ProfileFact] = Field(default_factory=list, max_length=60)
+    experience_projects: list[ProfileFact] = Field(default_factory=list, max_length=30)
+    education_qualifications: list[ProfileFact] = Field(default_factory=list, max_length=20)
+    assessments: list[RequirementAssessment] = Field(default_factory=list, max_length=160)
 
 
 class CategoryScore(StrictModel):

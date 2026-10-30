@@ -67,6 +67,25 @@ document.addEventListener("DOMContentLoaded", () => {
     );
     card.append(scoreRow, node("p", report.summary, "demo-summary"));
 
+    const skillsSection = node("section", null, "demo-detail-section");
+    skillsSection.append(node("h4", "Required skill evidence"));
+    const matched = result.matched_skills || [];
+    const missing = result.missing_requirements || [];
+    skillsSection.append(node("p", `Matched: ${matched.length ? matched.join(", ") : "None found"}`));
+    skillsSection.append(node("p", `Not found in extracted text: ${missing.length ? missing.join(", ") : "None"}`));
+    card.append(skillsSection);
+
+    const scoreSection = node("section", null, "demo-detail-section");
+    scoreSection.append(node("h4", "How the provisional score is calculated"));
+    const scoreBreakdown = node("ul");
+    for (const category of report.category_breakdown) {
+      if (category.applicable_items) {
+        scoreBreakdown.append(node("li", `${category.category.replaceAll("_", " ")} (${Math.round(category.weight * 100)}% starting weight): ${category.explanation}`));
+      }
+    }
+    scoreSection.append(scoreBreakdown);
+    card.append(scoreSection);
+
     const assessmentsHeading = node("h4", "Requirement evidence");
     card.append(assessmentsHeading);
     const assessments = node("ul", null, "demo-assessments");
