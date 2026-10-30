@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Candidate screening report"><title>Candidate report · TalentLens</title>
+  <link rel="stylesheet" href="/static/css/global.css"><link rel="stylesheet" href="/static/css/candidate.css">
+  <script src="/static/js/api.js" defer></script><script src="/static/js/candidate.js" defer></script>
+</head>
+<body class="app-page">
+  <header class="topbar">
+    <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true">T</span><span>talent<span class="brand-accent">lens</span></span></a>
+    <nav class="main-nav" aria-label="Main navigation"><a href="/dashboard">Overview</a><a class="active" href="/screening#history" aria-current="page">Jobs &amp; screenings</a></nav>
+    <div class="topbar-actions"><label class="sr-only" for="organization-select">Organization</label><select id="organization-select" class="organization-select"></select><span id="user-email" class="user-email"></span><button id="sign-out" class="button button-quiet" type="button">Sign out</button></div>
+  </header>
+  <main class="page-shell report-shell">
+    <a class="back-link" href="/screening#history"><span aria-hidden="true">←</span> Back to screening history</a>
+    <div id="page-notice" class="notice" role="alert" hidden></div>
+    <section id="report-loading" class="loading-card" role="status">Loading candidate report…</section>
+    <section id="report-content" hidden>
+      <div class="report-heading"><div><p class="eyebrow">Candidate report</p><h1 id="candidate-name">Candidate</h1><p id="candidate-meta" class="muted"></p></div><div class="report-actions"><button id="retry-screening" class="button button-secondary" type="button" hidden>Retry now</button><button id="delete-resume" class="button button-quiet" type="button">Delete resume</button><button id="download-resume" class="button button-secondary" type="button">View resume <span aria-hidden="true">↗</span></button></div></div>
+      <div class="report-status surface"><div><span class="eyebrow">Screening status</span><p id="report-status" class="status-pill"></p></div><p id="status-explanation" class="muted"></p></div>
+      <section class="score-grid" aria-label="Screening scores"><article class="surface score-card"><span class="eyebrow">Job match</span><strong id="match-score">—</strong><span class="muted">out of 10</span></article><article class="surface score-card"><span class="eyebrow">Review priority</span><strong id="classification-score">—</strong><span class="muted">out of 100</span></article><article class="surface score-card score-job"><span class="eyebrow">Role</span><strong id="report-job">—</strong><span id="report-created" class="muted"></span></article></section>
+      <section class="surface report-panel"><div class="section-heading"><div><p class="eyebrow">Evidence-led review</p><h2>Candidate summary</h2></div></div><div id="report-body" class="report-body"></div></section>
+      <section class="surface report-panel"><div class="section-heading"><div><p class="eyebrow">Traceability</p><h2>Supporting evidence</h2></div></div><div id="evidence-body" class="evidence-list"></div></section>
+      <p class="small muted report-disclaimer">Screening results are decision-support information. Review source evidence and use human judgment. Failed processing is never presented as a completed report.</p>
+    </section>
+  </main>
+</body>
+</html>

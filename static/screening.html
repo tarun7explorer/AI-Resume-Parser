@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Manage roles and candidate screenings"><title>Jobs &amp; screenings · TalentLens</title>
+  <link rel="stylesheet" href="/static/css/global.css"><link rel="stylesheet" href="/static/css/screening.css">
+  <script src="/static/js/api.js" defer></script><script src="/static/js/screening.js" defer></script>
+</head>
+<body class="app-page">
+  <header class="topbar">
+    <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true">T</span><span>talent<span class="brand-accent">lens</span></span></a>
+    <nav class="main-nav" aria-label="Main navigation"><a href="/dashboard">Overview</a><a class="active" href="/screening" aria-current="page">Jobs &amp; screenings</a></nav>
+    <div class="topbar-actions"><label class="sr-only" for="organization-select">Organization</label><select id="organization-select" class="organization-select"></select><span id="user-email" class="user-email"></span><button id="sign-out" class="button button-quiet" type="button">Sign out</button></div>
+  </header>
+  <main class="page-shell">
+    <section class="page-heading"><div><p class="eyebrow">Workspace</p><h1>Jobs &amp; screenings</h1><p class="muted">Create role criteria, add resumes, and follow each screening through its status.</p></div><a class="button button-primary" href="#new-job">New job <span aria-hidden="true">＋</span></a></section>
+    <div id="page-notice" class="notice" role="alert" hidden></div>
+    <section class="screening-grid">
+      <article id="new-job" class="surface job-editor">
+        <div class="section-heading"><div><p class="eyebrow">Role setup</p><h2 id="job-form-heading">Create a job</h2></div><span class="step-badge">01</span></div>
+        <form id="job-form" class="form-stack">
+          <input id="editing-job-id" type="hidden">
+          <label for="job-title">Job title <span class="required">*</span></label><input id="job-title" name="title" required maxlength="200" placeholder="e.g. Senior product designer">
+          <div class="label-row"><label for="job-description">Job description <span class="required">*</span></label><span class="small muted">Paste text or extract from PDF</span></div>
+          <textarea id="job-description" name="description" rows="6" required maxlength="100000" placeholder="Describe the role, team, and outcomes…"></textarea>
+          <div class="pdf-extract-row"><label class="button button-secondary file-button" for="job-pdf">Choose job-description PDF</label><input id="job-pdf" class="sr-only" type="file" accept="application/pdf,.pdf"><button id="extract-job-pdf" class="button button-secondary" type="button">Extract text</button><span id="job-pdf-name" class="small muted">No PDF selected</span></div>
+          <div class="form-two"><div><label for="required-skills">Required skills</label><input id="required-skills" placeholder="Python, SQL, hiring" aria-describedby="skill-help"><p id="skill-help" class="field-help">Separate skills with commas.</p></div><div><label for="preferred-skills">Preferred skills</label><input id="preferred-skills" placeholder="AWS, analytics"></div></div>
+          <label for="experience-years">Minimum relevant experience <span class="optional">(years)</span></label><input id="experience-years" type="number" min="0" max="60" step="0.5" inputmode="decimal" placeholder="e.g. 3">
+          <label for="qualifications">Qualifications</label><textarea id="qualifications" rows="3" maxlength="10000" placeholder="Education, certifications, or equivalent experience…"></textarea>
+          <label for="responsibilities">Key responsibilities</label><textarea id="responsibilities" rows="3" maxlength="10000" placeholder="What will this person own or deliver?"></textarea>
+          <div class="form-actions"><button id="save-job" class="button button-primary" type="submit">Save job</button><button id="cancel-edit" class="button button-quiet" type="button" hidden>Cancel edit</button></div>
+        </form>
+      </article>
+      <aside class="right-column">
+        <article class="surface upload-card"><div class="section-heading"><div><p class="eyebrow">Candidate intake</p><h2>Upload resumes</h2></div><span class="step-badge">02</span></div>
+          <p class="muted small">PDF files only · Up to 20 files · 10 MiB each</p>
+          <form id="resume-form" class="form-stack">
+            <label for="upload-job">Screening for</label><select id="upload-job" required><option value="">Choose an active job</option></select>
+            <label class="drop-zone" for="resume-files"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose PDF resumes</strong><span class="small muted">Select one file or a batch</span><input id="resume-files" type="file" accept="application/pdf,.pdf" multiple required></label>
+            <div id="selected-files" class="selected-files" aria-live="polite"></div>
+            <button id="upload-resumes" class="button button-primary button-wide" type="submit">Start screening</button>
+          </form><div id="upload-results" class="upload-results" aria-live="polite"></div>
+          <p class="small muted upload-note">Files are stored privately and processed independently. Each file keeps its own outcome if another upload fails.</p>
+        </article>
+        <article class="surface jobs-card"><div class="section-heading"><div><p class="eyebrow">Your roles</p><h2>Active jobs</h2></div><span id="job-count" class="count-pill">—</span></div><div id="jobs-list" class="jobs-list" role="list"></div></article>
+      </aside>
+    </section>
+    <section id="history" class="surface history-surface"><div class="section-heading history-heading"><div><p class="eyebrow">Review queue</p><h2>Screening history</h2><p class="muted small">Search candidate names and filter by role, status, or date.</p></div><button id="export-csv" class="button button-secondary" type="button">Export CSV <span aria-hidden="true">↓</span></button></div>
+      <form id="history-filters" class="filters-row">
+        <label class="search-control"><span class="sr-only">Search candidate or job</span><span aria-hidden="true">⌕</span><input id="history-search" type="search" placeholder="Search candidates or roles"></label>
+        <label><span class="sr-only">Filter by job</span><select id="history-job"><option value="">All jobs</option></select></label>
+        <label><span class="sr-only">Filter by status</span><select id="history-status"><option value="">All statuses</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="completed">Completed</option><option value="retryable_failure">Retryable failure</option><option value="failed">Failed</option></select></label>
+        <label><span class="sr-only">From date</span><input id="history-after" type="date"></label>
+        <label><span class="sr-only">To date</span><input id="history-before" type="date"></label>
+        <button class="button button-secondary" type="submit">Apply</button>
+      </form>
+      <div class="table-scroll"><table><thead><tr><th scope="col"><span class="sr-only">Select for comparison</span></th><th scope="col">Candidate</th><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Match</th><th scope="col">Date added</th><th scope="col"><span class="sr-only">Open report or retry</span></th></tr></thead><tbody id="history-rows"></tbody></table></div>
+      <div id="history-empty" class="empty-inline" hidden><h3>No screenings found</h3><p>Try adjusting the filters or upload a resume for an active job.</p></div>
+      <div id="history-loading" class="loading-inline" role="status" hidden>Loading screening history…</div>
+      <div class="history-pagination"><button id="history-previous" class="button button-secondary" type="button" disabled>Previous</button><span id="history-page-label" class="small muted" aria-live="polite">Page 1</span><button id="history-next" class="button button-secondary" type="button" disabled>Next</button></div>
+      <div class="compare-actions"><span id="compare-count" class="small muted">Select two to four completed reports to compare.</span><button id="compare-selected" class="button button-secondary" type="button" disabled>Compare selected</button></div>
+      <dialog id="candidate-compare" class="compare-dialog" aria-labelledby="compare-title"><div class="section-heading"><div><p class="eyebrow">Side-by-side review</p><h2 id="compare-title">Candidate comparison</h2></div><button id="compare-close" class="button button-quiet" type="button">Close</button></div><div id="compare-content" class="compare-content"></div></dialog>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,28 @@
+[project]
+name = "ai-resume-screening"
+version = "0.1.0"
+description = "Evidence-based resume screening and candidate intelligence API"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "fastapi>=0.141,<1",
+    "httpx>=0.28,<1",
+    "python-multipart>=0.0.20,<1",
+    "pymupdf>=1.24,<2",
+    "pytesseract>=0.3.13,<1",
+    "Pillow>=10,<13",
+    "python-dotenv>=1,<2",
+    "pydantic-settings>=2.15,<3",
+    "uvicorn>=0.52,<1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28,<1",
+    "pytest>=8.4,<10",
+]
+
+[tool.uv]
+package = false
+
+

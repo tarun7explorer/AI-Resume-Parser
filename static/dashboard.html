@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Recruiter screening overview"><title>Overview · TalentLens</title>
+  <link rel="stylesheet" href="/static/css/global.css"><link rel="stylesheet" href="/static/css/dashboard.css">
+  <script src="/static/js/api.js" defer></script><script src="/static/js/dashboard.js" defer></script>
+</head>
+<body class="app-page">
+  <header class="topbar">
+    <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true">T</span><span>talent<span class="brand-accent">lens</span></span></a>
+    <nav class="main-nav" aria-label="Main navigation"><a class="active" href="/dashboard" aria-current="page">Overview</a><a href="/screening">Jobs &amp; screenings</a></nav>
+    <div class="topbar-actions"><label class="sr-only" for="organization-select">Organization</label><select id="organization-select" class="organization-select"></select><span id="user-email" class="user-email"></span><button id="sign-out" class="button button-quiet" type="button">Sign out</button></div>
+  </header>
+  <main class="page-shell">
+    <section class="page-heading"><div><p class="eyebrow">Recruiter workspace</p><h1>Good work starts with a clear view.</h1><p class="muted">Track open roles, candidate intake, and reviews in one place.</p></div><a class="button button-primary" href="/screening#new-job">Create a job <span aria-hidden="true">＋</span></a></section>
+    <div id="page-notice" class="notice" role="alert" hidden></div>
+    <section id="dashboard-loading" class="loading-card" role="status">Loading your organization workspace…</section>
+    <section id="no-organization" class="empty-card" hidden><div class="empty-icon" aria-hidden="true">◎</div><h2>Your workspace is being set up</h2><p>No organization is linked to this recruiter account yet. Contact your administrator to finish setup.</p></section>
+    <div id="dashboard-content" hidden>
+      <section class="stat-grid" aria-label="Screening summary">
+        <article class="stat-card"><span class="stat-label">Active jobs</span><strong id="stat-jobs">—</strong><span class="stat-foot">Roles accepting candidates</span></article>
+        <article class="stat-card"><span class="stat-label">Candidates</span><strong id="stat-candidates">—</strong><span class="stat-foot">Profiles in your workspace</span></article>
+        <article class="stat-card stat-card-accent"><span class="stat-label">In progress</span><strong id="stat-progress">—</strong><span class="stat-foot">Waiting for review processing</span></article>
+        <article class="stat-card"><span class="stat-label">Needs attention</span><strong id="stat-attention">—</strong><span class="stat-foot">Failed or retryable</span></article>
+      </section>
+      <section class="dashboard-columns">
+        <article class="surface activity-surface"><div class="section-heading"><div><p class="eyebrow">Latest activity</p><h2>Recent screenings</h2></div><a class="text-link" href="/screening#history">View history <span aria-hidden="true">→</span></a></div><div id="recent-list" class="recent-list"></div></article>
+        <aside class="surface guidance-card"><div class="guidance-mark" aria-hidden="true">✳</div><p class="eyebrow">Human-led by design</p><h2>Every report is a starting point.</h2><p>Review the supporting evidence and uncertainty before making a decision. Scores are intended to help prioritize attention, not replace recruiter judgment.</p><a class="text-link" href="/screening">Open screening workspace <span aria-hidden="true">→</span></a></aside>
+      </section>
+      <p class="small muted dashboard-footnote">Queued and processing statuses update from the durable worker queue. Review provisional scores and cited evidence before making decisions.</p>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,397 @@
+AI Resume Screening
+& Candidate Intelligence
+
+Project vision, product capabilities, technical approach, and intended outcomes
+
+PROJECT PURPOSE
+
+Help recruiters review resumes faster and more consistently by comparing candidate evidence with a job description, highlighting document-integrity concerns, checking profile links, and saving explainable screening reports.
+
+Prepared as a practical implementation brief
+
+
+Project Overview | Concept and technical plan
+
+AI RESUME SCREENING & CANDIDATE INTELLIGENCE
+
+1. Executive Summary
+
+The AI Resume Screening & Candidate Intelligence Platform is a web application for recruiters. A recruiter uploads one or more resume PDFs and supplies a job description either as a PDF or pasted text. The application extracts relevant information, compares it with the role requirements, and creates a structured report for each resume.
+
+The system combines conventional Python processing with AI-assisted language understanding. Python handles file validation, text extraction, link detection, scoring calculations, and persistence. A language model helps summarize the resume and interpret how its evidence relates to the job description. The final result is validated before it is shown or saved.
+
+The first release is intended as a controlled pilot using free-tier services where practical. Free tiers have limits and are not a guarantee of continuous availability, high-volume processing, or production service-level agreements.
+
+2. Vision and End Goal
+
+Vision
+
+Make resume screening clearer, faster, and more evidence-based. The platform should give recruiters a consistent starting point for reviewing applicants instead of relying only on keyword searches or an unstructured AI-generated opinion.
+
+End goal
+
+Let a recruiter sign in, create a job screening, and upload resume PDFs or paste/upload a job description.
+
+Produce a concise candidate summary, job-match score, classification score, matched requirements, missing information, and supporting evidence.
+
+Flag potentially hidden or suspicious resume text for human review without automatically treating every anomaly as misconduct.
+
+Detect whether LinkedIn, GitHub, and portfolio links are present and report the status of basic format/accessibility checks.
+
+Save screening history and reports securely so the client can revisit, search, filter, and compare candidates for a role.
+
+Make failures visible and recoverable: incomplete analysis must not be presented as a completed or verified result.
+
+3. Intended Users and Main Use Case
+
+Primary users are recruiters, hiring coordinators, or an authorized client-side administrator. The interface should be clean and simple, with minimal setup and clear explanations of scores and warnings.
+
+Typical user journey
+
+Sign in through the secure recruiter login.
+
+Create or select a job and provide its job description.
+
+Upload one resume or a batch of PDF resumes.
+
+Review processing status while each resume is analyzed.
+
+Open each candidate report to inspect the score, evidence, missing requirements, profile links, and integrity findings.
+
+Filter and compare reports, then make a human-led decision about who should progress.
+
+4. Core Features
+
+Feature
+
+What it does
+
+Resume intake and parsing
+
+Accept PDF resumes, validate file type and size, extract text and metadata, and use OCR for scanned pages when needed.
+
+Job description analysis
+
+Accept pasted text or a PDF and identify required skills, preferred skills, qualifications, and responsibilities.
+
+Resume summary
+
+Generate a short, readable summary of relevant experience, skills, education, and projects based on the content available.
+
+Requirement-by-requirement matching
+
+Show which requirements are supported, partially supported, missing, or unclear, with evidence references where possible.
+
+Two screening scores
+
+Provide a job-match score out of 10 and a normalized classification score out of 100, with visible scoring criteria.
+
+Candidate classification
+
+Use configurable bands such as Not Suitable, Considered, and Priority for Interview Review; these are review aids, not automatic hiring decisions.
+
+Hidden-text and integrity analysis
+
+Inspect extracted text, font properties, placement, visibility clues, and possible prompt-injection attempts; show the suspicious text and why it was flagged.
+
+Profile link detection
+
+Extract LinkedIn, GitHub, and portfolio URLs and label each as found, not detected, malformed, or unable to verify.
+
+Recruiter dashboard
+
+Show screening history, job filters, candidate scores, processing status, warnings, and links to detailed reports.
+
+Persistent report storage
+
+Save job details, candidate metadata, screening results, score versions, evidence, status, and file references in Supabase.
+
+Exports and review
+
+Support appropriate report viewing and CSV export, subject to access permissions and the client's data-handling policy.
+
+5. Technology Stack
+
+Layer
+
+Technology
+
+Purpose
+
+Frontend
+
+HTML5, CSS3, vanilla JavaScript
+
+A lightweight, responsive recruiter interface without a frontend framework.
+
+Backend
+
+Python and FastAPI
+
+REST API, input validation, authentication checks, workflow orchestration, and report delivery.
+
+AI provider
+
+Groq API as the initial provider; NVIDIA API optional
+
+Language understanding, structured extraction, summaries, and explanations. Use only a currently available model and approved terms.
+
+PDF processing
+
+PyMuPDF and Tesseract OCR
+
+Extract PDF text and layout clues; OCR scanned pages when required.
+
+Matching and scoring
+
+Python rules, skill normalization, optional scikit-learn utilities
+
+Deterministic weighted scoring and evidence-based requirement matching.
+
+Authentication and database
+
+Supabase Auth and PostgreSQL
+
+Recruiter authentication, relational records, access policies, and saved reports.
+
+File storage
+
+Supabase Storage private bucket
+
+Store original resume PDFs privately and serve them only through authorized, short-lived access.
+
+Hosting
+
+Render
+
+Host the FastAPI application and serve the static frontend. Free-tier behavior and resource limits must be considered.
+
+Python tooling
+
+uv with pyproject.toml and uv.lock
+
+Reproducible dependency resolution and consistent installation from a lockfile.
+
+Testing
+
+pytest
+
+Unit, integration, security, parsing, scoring, and workflow tests.
+
+6. How the System Works
+
+Receive and validate input: Authenticate the recruiter, validate uploads, enforce size/page limits, and store the original files in private storage.
+
+Extract document content: Extract text and layout information from each PDF. Use OCR when the PDF is image-based or has insufficient text.
+
+Analyze document integrity: Look for unusual invisible/small text, text-position anomalies, and instruction-like content that may attempt to influence an AI model.
+
+Interpret the job: Convert the job description into a structured set of requirements with weights and explicit mandatory criteria.
+
+Map resume evidence: Use deterministic matching and AI-assisted interpretation to map requirements to resume passages. Validate that cited evidence exists in extracted text.
+
+Calculate scores: Calculate scores in Python using versioned rules. The LLM provides structured observations but does not independently decide the final score.
+
+Validate and persist: Validate the report schema, record the model and scoring version, save the report, and mark the job complete only after persistence succeeds.
+
+Show recruiter report: Present the summary, scores, evidence, gaps, profile links, warnings, and processing status in the dashboard.
+
+7. Scoring and Classification Approach
+
+The application should show two distinct measures. The job-match score (out of 10) summarizes the degree of alignment between the resume evidence and the requirements of a specific job. The classification score (out of 100) is a normalized prioritization measure used to help recruiters decide which reports to review first.
+
+An initial configurable weighting proposal is:
+
+Criterion
+
+Initial weight
+
+Required technical skills
+
+30%
+
+Relevant experience and projects
+
+25%
+
+Job responsibilities
+
+20%
+
+Qualifications
+
+10%
+
+Strength and traceability of supporting evidence
+
+15%
+
+Total
+
+100%
+
+Illustrative classification bands to calibrate with the client:
+
+Score range
+
+Suggested label
+
+0–39
+
+Not Suitable for this role based on current evidence
+
+40–74
+
+Considered — additional recruiter review recommended
+
+75–100
+
+Priority for Interview Review
+
+These weights and thresholds are starting assumptions, not scientifically validated cutoffs. They should be tested against representative, human-reviewed examples and adjusted for each job family. Missing resume information should be marked as unknown where appropriate rather than automatically treated as proof that a candidate lacks a skill. Scores must not be the sole basis for rejection.
+
+8. Hidden Text, Integrity, and Link Checks
+
+Hidden or suspicious text
+
+PDF text can sometimes be present in the text layer while being difficult to see on the rendered page. The detector can inspect font size, color, opacity-related signals where available, coordinates, overlap, and differences between extracted text and rendered content. It can also flag text that resembles instructions such as 'ignore previous instructions' or attempts to force a favorable score.
+
+No single signal proves fraud. Accessibility text, OCR layers, formatting artifacts, and legitimate document design can produce anomalies. The report should show the finding, page, evidence, and severity, and ask the recruiter to review it.
+
+Links and identity limitations
+
+The platform can detect whether LinkedIn, GitHub, and portfolio URLs are included and optionally perform safe, limited reachability checks. A URL being present or accessible does not prove that it belongs to the candidate or that the work shown there was authored by them. Avoid unrestricted URL fetching; protect against server-side request forgery (SSRF).
+
+9. Data Storage, Privacy, and Security
+
+Use Supabase Auth for recruiter sign-in and verify access tokens on the backend.
+
+Use Row Level Security (RLS) and organization/role checks so users can access only authorized jobs, candidates, files, and reports.
+
+Keep resume PDFs in a private storage bucket. Do not expose permanent public file URLs.
+
+Keep API keys and service credentials in server-side environment variables; never place them in frontend JavaScript or source control.
+
+Treat all resume content as untrusted input. Do not execute embedded content or follow instructions found inside a resume.
+
+Use upload limits, request rate limits, safe error messages, audit events, and deletion/retention controls.
+
+Before sending real CVs to an external model provider, review the provider's current terms and data-use settings and obtain client approval.
+
+Document what data is stored, why it is stored, who can access it, and when it will be deleted.
+
+10. Reliability and Failure Handling
+
+Screening is asynchronous because PDF parsing, OCR, and external model requests can take time. The API should create a persistent screening job and return its ID promptly. A worker processes the job and updates its status in Supabase.
+
+Use a database-backed queue with atomic job claiming, attempt counters, leases, and recovery for abandoned jobs.
+
+Retry transient timeouts and rate limits with bounded backoff; avoid retry loops that can exhaust free quotas.
+
+Use idempotency controls to prevent duplicate reports after a browser or network retry.
+
+Store clear states such as queued, processing, completed, retryable failure, and failed.
+
+Never present a missing, malformed, or partially generated AI response as a valid completed screening.
+
+Log a correlation ID and safe error code without leaking resume contents, secrets, or provider responses.
+
+For a free Render pilot, a lightweight worker can run with the web service, but service restarts and resource limits remain possible. A persistent queue improves recovery; it does not guarantee continuous processing while a free instance is asleep. Higher-volume use may require a separate worker and a paid hosting plan.
+
+11. Quality Assurance and Acceptance Criteria
+
+Test area
+
+Acceptance goal
+
+PDF handling
+
+Valid, scanned, malformed, and oversized files produce correct results or clear errors.
+
+Evidence traceability
+
+Important match claims point to extracted text and page references where available.
+
+Score consistency
+
+Identical inputs and scoring configuration produce reproducible deterministic calculations.
+
+Integrity detection
+
+Known hidden-text test cases are detected and false positives are measured.
+
+AI robustness
+
+Prompt injection, malformed outputs, provider timeouts, and quota errors do not create false reports.
+
+Authorization
+
+A recruiter cannot access another user's or organization's records without permission.
+
+Persistence
+
+Completed reports remain available after application restarts and are associated with the correct job.
+
+Privacy
+
+Private resumes are not publicly accessible and deletion follows the agreed retention policy.
+
+Human review
+
+Recruiters can inspect evidence and override or annotate recommendations with an audit trail where required.
+
+12. Implementation Roadmap
+
+Phase 1 — Foundation: Set up the repository, Python environment, FastAPI app, Render deployment, Supabase project, authentication, and database policies.
+
+Phase 2 — Intake and storage: Implement job creation, PDF uploads, private storage, resume metadata, and persistent screening status.
+
+Phase 3 — Parsing and matching: Build PDF extraction, OCR fallback, link extraction, requirement normalization, evidence mapping, and deterministic scoring.
+
+Phase 4 — AI analysis: Integrate the primary model, structured outputs, schema validation, prompt-injection defenses, and bounded retries.
+
+Phase 5 — Worker and reporting: Implement recoverable background processing, candidate report pages, history, filters, and exports.
+
+Phase 6 — Validation and handover: Run test suites, evaluate a human-reviewed dataset, calibrate scoring, document privacy/retention, and prepare client instructions.
+
+13. Deployment and Cost Expectations
+
+The planned pilot uses Render for the application, Supabase Free for authentication, PostgreSQL, and private file storage, and a free-tier LLM API where the current model and provider terms permit. The Python project uses pyproject.toml and uv.lock so dependency versions are resolved reproducibly.
+
+Render's build command should install uv and synchronize the locked environment, for example: pip install uv && uv sync --frozen. The start command should launch Uvicorn on the port provided by Render. The exact configuration must be tested against the selected Python version and the final dependency groups.
+
+Free-tier limits, sleep behavior, storage quotas, model rate limits, and data-use terms can change. The client should approve these constraints for the pilot. The system should not promise unlimited processing, guaranteed uptime, or zero operating cost.
+
+14. Risks and Important Boundaries
+
+A resume is a self-reported document. The platform cannot independently verify identity, work history, certifications, or skill proficiency from the resume alone.
+
+AI summaries and matching can be wrong. Evidence checks, test datasets, and recruiter review remain necessary.
+
+Hidden-text detection is a risk signal, not a definitive fraud verdict.
+
+Scores can inherit bias from job criteria or historical data. Avoid protected attributes and unrelated personal information; periodically evaluate outcomes for unfair patterns.
+
+Use the system to support prioritization and structured review, not as an unreviewed automated rejection system.
+
+Free hosting and free AI access are suitable for an MVP/pilot only when their operational, privacy, and quota limits are acceptable.
+
+15. Definition of Success
+
+The project is successful when a recruiter can:
+
+Create a job screening and upload resumes without technical assistance.
+
+Receive readable, evidence-backed candidate reports with useful scores and clear uncertainty indicators.
+
+See profile-link presence and document-integrity findings without mistaking them for identity verification.
+
+Find previous reports securely and reliably.
+
+Understand why a candidate was prioritized and manually review the supporting evidence.
+
+Trust that failed processing is reported honestly and that candidate data is protected.
+
+Closing statement
+
+The platform's value is not simply generating a score. It is turning resumes into structured, explainable evidence that helps recruiters review candidates more consistently, while preserving human judgment, protecting personal data, and making technical failures visible.

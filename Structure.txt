@@ -1,0 +1,77 @@
+ai-resume-screening/
+│
+├── app/
+│   ├── main.py
+│   ├── config.py
+│   ├── dependencies.py
+│   ├── security.py
+│   ├── database.py
+│   ├── exceptions.py
+│   │
+│   ├── api_auth.py
+│   ├── api_jobs.py
+│   ├── api_candidates.py
+│   ├── api_screening.py
+│   │
+│   ├── schema_auth.py
+│   ├── schema_jobs.py
+│   ├── schema_candidates.py
+│   ├── schema_screening.py
+│   │
+│   ├── crud_auth.py
+│   ├── crud_jobs.py
+│   ├── crud_candidates.py
+│   ├── crud_screening.py
+│   │
+│   ├── screening.py
+│   ├── scoring.py
+│   ├── matching.py
+│   ├── resume_parser.py
+│   ├── integrity.py
+│   ├── links.py
+│   ├── ai.py
+│   └── worker.py
+│
+├── static/
+│   ├── index.html
+│   ├── dashboard.html
+│   ├── screening.html
+│   ├── candidate.html
+│   │
+│   ├── css/
+│   │   ├── global.css
+│   │   ├── dashboard.css
+│   │   ├── screening.css
+│   │   └── candidate.css
+│   │
+│   ├── js/
+│   │   ├── api.js
+│   │   ├── auth.js
+│   │   ├── dashboard.js
+│   │   ├── screening.js
+│   │   └── candidate.js
+│   │
+│   └── assets/
+│
+├── supabase/
+│   └── schema.sql
+│
+├── tests/
+│   ├── conftest.py
+│   ├── test_auth.py
+│   ├── test_scoring.py
+│   ├── test_screening.py
+│   ├── test_security.py
+│   └── test_resume_parser.py
+│
+├── scripts/
+│   ├── create_admin.py
+│   └── evaluate_scoring.py
+│
+├── .env.example
+├── .gitignore
+├── pyproject.toml
+├── uv.lock
+├── render.yaml
+├── pytest.ini
+└── README.md
