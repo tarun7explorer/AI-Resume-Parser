@@ -1,384 +1,605 @@
-"""User-scoped Supabase Auth, PostgREST, and Storage HTTP access.
+"""PostgreSQL persistence and durable job queue (strict Render-only MVP).
 
-Requests use the public anon key and the currently authenticated recruiter's
-bearer token. This preserves PostgreSQL RLS and avoids service-role bypasses.
+* One synchronous psycopg 3 connection pool (``Database``).
+* ``JobRepository``: job creation, token verification, queue operations,
+  retention cleanup. All SQL is parameterised; every write runs in an explicit
+  transaction.
+* Queue semantics live in PostgreSQL functions (see
+  db/migrations/20261031_02_queue_functions.sql); this module only calls them.
+
+FastAPI handlers must call these blocking methods from ``def`` endpoints (run in
+the threadpool) or via ``run_in_threadpool``; the worker calls them directly.
+Never log ``DATABASE_URL``, token hashes, resume bytes or result contents.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from collections.abc import Mapping
+import os
+import re
+import uuid
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import quote
 
-import httpx
-from pydantic import ValidationError
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
-from app.config import Settings
-from app.exceptions import ApiError
-from app.schema_auth import AuthenticatedUser
+logger = logging.getLogger("resume_parser.database")
 
-logger = logging.getLogger(__name__)
-RESUME_BUCKET_ID = "private-resumes"
+INPUT_JD_TEXT = "jd_text"
+INPUT_JD_PDF = "jd_pdf"
+INPUT_RESUME_PDF = "resume_pdf"
+
+MAX_INPUT_BYTES_HARD = 50 * 1024 * 1024  # mirrors the DB CHECK backstop
+MAX_RESULT_BYTES = 5 * 1024 * 1024
+_ERROR_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_EVENT_TYPE_RE = re.compile(r"^[a-z0-9_.]{1,64}$")
 
 
-class SupabaseApi:
-    """Thin, pooled HTTP client for Supabase endpoints, always RLS-scoped."""
+# --------------------------------------------------------------------------
+# Errors and enums
+# --------------------------------------------------------------------------
+class DatabaseError(RuntimeError):
+    """Unexpected database condition (message is safe to log)."""
 
-    def __init__(self, settings: Settings, http_client: httpx.AsyncClient) -> None:
-        if settings.supabase_url is None or settings.supabase_anon_key is None:
-            raise ApiError(503, "supabase_not_configured", "Authentication and data services are unavailable")
-        self._base_url = str(settings.supabase_url).rstrip("/")
-        self._anon_key = settings.supabase_anon_key.get_secret_value()
-        self._bucket = RESUME_BUCKET_ID
-        self._http = http_client
 
-    def _headers(self, access_token: str | None = None, *, prefer: str | None = None) -> dict[str, str]:
-        headers = {
-            "apikey": self._anon_key,
-            "Accept": "application/json",
-        }
-        if access_token:
-            headers["Authorization"] = f"Bearer {access_token}"
-        if prefer:
-            headers["Prefer"] = prefer
-        return headers
+class InvalidJobInput(ValueError):
+    """The caller supplied an invalid job definition."""
 
-    async def _send(
+
+class JobStatus(StrEnum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class InputType(StrEnum):
+    JD_TEXT = "jd_text"
+    JD_PDF = "jd_pdf"
+    RESUME_PDF = "resume_pdf"
+
+
+class CompleteOutcome(StrEnum):
+    COMPLETED = "completed"
+    ALREADY_COMPLETED = "already_completed"  # idempotent repeat by the same attempt
+    STALE = "stale"  # caller lost the lease / a newer attempt owns the job
+    MISSING = "missing"
+
+
+class FailOutcome(StrEnum):
+    REQUEUED = "requeued"
+    FAILED = "failed"
+    ALREADY_FAILED = "already_failed"
+    STALE = "stale"
+    MISSING = "missing"
+
+
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class DatabaseSettings:
+    """Connection settings. ``database_url`` is excluded from repr()."""
+
+    database_url: str = field(repr=False)
+    pool_min_size: int = 1
+    pool_max_size: int = 5
+    pool_timeout_seconds: float = 10.0
+    connect_timeout_seconds: int = 10
+    statement_timeout_ms: int = 30_000
+
+    def __post_init__(self) -> None:
+        if not self.database_url.startswith(("postgresql://", "postgres://")):
+            raise ValueError("DATABASE_URL must be a postgresql:// or postgres:// URL")
+        if not 0 <= self.pool_min_size <= self.pool_max_size or self.pool_max_size < 1:
+            raise ValueError("invalid pool sizes")
+        if self.statement_timeout_ms < 1000:
+            raise ValueError("statement_timeout_ms must be >= 1000")
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> DatabaseSettings:
+        source = os.environ if env is None else env
+        url = source.get("DATABASE_URL", "").strip()
+        if not url:
+            raise ValueError("DATABASE_URL is required")
+        return cls(
+            database_url=url,
+            pool_min_size=int(source.get("DB_POOL_MIN", "1")),
+            pool_max_size=int(source.get("DB_POOL_MAX", "5")),
+            pool_timeout_seconds=float(source.get("DB_POOL_TIMEOUT_SECONDS", "10")),
+            statement_timeout_ms=int(source.get("DB_STATEMENT_TIMEOUT_MS", "30000")),
+        )
+
+
+# --------------------------------------------------------------------------
+# Records
+# --------------------------------------------------------------------------
+def _safe_filename(name: str | None) -> str | None:
+    if not name:
+        return None
+    base = PurePosixPath(name.replace("\\", "/")).name
+    cleaned = "".join(ch for ch in base if ch.isprintable() and ch not in '<>:"|?*')
+    cleaned = cleaned.strip().strip(".")[:255]
+    return cleaned or None
+
+
+@dataclass(frozen=True)
+class NewInput:
+    """One input to persist with a new job. Positions are assigned by the repo."""
+
+    input_type: InputType
+    content: bytes | None = field(default=None, repr=False)
+    text_content: str | None = field(default=None, repr=False)
+    filename: str | None = None
+    content_type: str | None = None
+    candidate_label: str | None = None
+
+    @classmethod
+    def jd_text(cls, text: str) -> NewInput:
+        return cls(InputType.JD_TEXT, text_content=text)
+
+    @classmethod
+    def jd_pdf(cls, data: bytes, filename: str | None = None) -> NewInput:
+        return cls(InputType.JD_PDF, content=data, filename=filename,
+                   content_type="application/pdf")
+
+    @classmethod
+    def resume_pdf(
+        cls, data: bytes, filename: str | None = None, candidate_label: str | None = None
+    ) -> NewInput:
+        return cls(InputType.RESUME_PDF, content=data, filename=filename,
+                   content_type="application/pdf", candidate_label=candidate_label)
+
+
+@dataclass(frozen=True)
+class CreatedJob:
+    job_id: uuid.UUID
+    token_expires_at: datetime
+
+
+@dataclass(frozen=True)
+class JobRecord:
+    id: uuid.UUID
+    status: JobStatus
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    attempts: int
+    max_attempts: int
+    next_attempt_at: datetime
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    finished_by: str | None
+    finished_attempt: int | None
+    error_code: str | None
+    error_message: str | None
+    result: dict[str, Any] | None = field(repr=False)
+    retention_expires_at: datetime
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in (JobStatus.COMPLETED, JobStatus.FAILED)
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> JobRecord:
+        data = dict(row)
+        data["status"] = JobStatus(data["status"])
+        return cls(**{name: data[name] for name in cls.__dataclass_fields__})
+
+
+@dataclass(frozen=True)
+class JobInputRecord:
+    id: uuid.UUID
+    job_id: uuid.UUID
+    input_type: InputType
+    position: int
+    candidate_label: str | None
+    filename: str | None
+    content_type: str | None
+    size_bytes: int
+    sha256: str
+    content: bytes | None = field(repr=False)
+    text_content: str | None = field(repr=False)
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> JobInputRecord:
+        data = dict(row)
+        data["input_type"] = InputType(data["input_type"])
+        if data["content"] is not None:
+            data["content"] = bytes(data["content"])
+        data["sha256"] = str(data["sha256"]).strip()
+        return cls(**{name: data[name] for name in cls.__dataclass_fields__})
+
+
+_JOB_COLUMNS = (
+    "id, status, created_at, updated_at, started_at, completed_at, attempts, "
+    "max_attempts, next_attempt_at, lease_owner, lease_expires_at, finished_by, "
+    "finished_attempt, error_code, error_message, result, retention_expires_at"
+)
+_INPUT_COLUMNS = (
+    "id, job_id, input_type, position, candidate_label, filename, content_type, "
+    "size_bytes, sha256, content, text_content"
+)
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# --------------------------------------------------------------------------
+# Connection pool
+# --------------------------------------------------------------------------
+class Database:
+    """Owns the psycopg connection pool."""
+
+    def __init__(self, settings: DatabaseSettings) -> None:
+        self._settings = settings
+        options = (
+            f"-c statement_timeout={settings.statement_timeout_ms} "
+            "-c idle_in_transaction_session_timeout=60000 -c timezone=UTC"
+        )
+        self._pool = ConnectionPool(
+            conninfo=settings.database_url,
+            min_size=settings.pool_min_size,
+            max_size=settings.pool_max_size,
+            timeout=settings.pool_timeout_seconds,
+            kwargs={
+                "row_factory": dict_row,
+                "connect_timeout": settings.connect_timeout_seconds,
+                "application_name": "resume-parser",
+                "options": options,
+            },
+            open=False,
+            name="resume-parser",
+        )
+
+    def open(self) -> None:
+        self._pool.open(wait=True, timeout=self._settings.pool_timeout_seconds)
+
+    def close(self) -> None:
+        self._pool.close()
+
+    def __enter__(self) -> Database:
+        self.open()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[psycopg.Connection[dict[str, Any]]]:
+        """Yield a connection inside an explicit transaction (commit/rollback)."""
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                yield conn
+
+    def ping(self) -> bool:
+        """Cheap readiness probe; never raises."""
+        try:
+            with self.transaction() as conn:
+                conn.execute("SELECT 1")
+            return True
+        except Exception:  # noqa: BLE001 - readiness must not raise
+            logger.warning("database ping failed")
+            return False
+
+    def applied_migrations(self) -> list[str]:
+        with self.transaction() as conn:
+            exists = conn.execute(
+                "SELECT to_regclass('public.schema_migrations') IS NOT NULL AS present"
+            ).fetchone()
+            if not exists or not exists["present"]:
+                return []
+            rows = conn.execute(
+                "SELECT version FROM public.schema_migrations ORDER BY version"
+            ).fetchall()
+            return [r["version"] for r in rows]
+
+
+# --------------------------------------------------------------------------
+# Repository
+# --------------------------------------------------------------------------
+def _dumps_strict(value: Any) -> str:
+    return json.dumps(value, allow_nan=False, separators=(",", ":"))
+
+
+class JobRepository:
+    """All job persistence and queue operations."""
+
+    def __init__(self, database: Database) -> None:
+        self._db = database
+
+    # ---- creation --------------------------------------------------------
+    def create_job(
         self,
-        method: str,
-        path: str,
         *,
-        access_token: str | None = None,
-        params: Mapping[str, str] | None = None,
-        json_body: Any | None = None,
-        content: bytes | None = None,
-        headers: Mapping[str, str] | None = None,
-        return_headers: bool = False,
-    ) -> Any:
-        request_headers = self._headers(access_token)
-        if headers:
-            request_headers.update(headers)
-        try:
-            response = await self._http.request(
-                method,
-                f"{self._base_url}{path}",
-                headers=request_headers,
-                params=params,
-                json=json_body,
-                content=content,
+        inputs: Sequence[NewInput],
+        token_hash: bytes,
+        retention: timedelta,
+        token_ttl: timedelta,
+        max_attempts: int = 3,
+        correlation_id: str | None = None,
+    ) -> CreatedJob:
+        """Persist a queued job, its inputs and a hashed access token atomically."""
+        token_hash = bytes(token_hash)
+        if len(token_hash) != 32:
+            raise InvalidJobInput("token_hash must be a 32-byte SHA-256 digest")
+        if retention <= timedelta(0) or token_ttl <= timedelta(0):
+            raise InvalidJobInput("retention and token_ttl must be positive")
+        if not 1 <= max_attempts <= 20:
+            raise InvalidJobInput("max_attempts must be between 1 and 20")
+        rows = self._prepare_inputs(inputs)
+
+        job_id = uuid.uuid4()
+        now = utcnow()
+        token_expires_at = now + token_ttl
+        with self._db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO public.screening_jobs (id, max_attempts, retention_expires_at) "
+                "VALUES (%s, %s, %s)",
+                (job_id, max_attempts, now + retention),
             )
-        except httpx.HTTPError:
-            raise ApiError(503, "supabase_unavailable", "Authentication and data services are temporarily unavailable") from None
-
-        if response.status_code < 400:
-            if not response.content:
-                return (None, response.headers) if return_headers else None
-            try:
-                payload = response.json()
-                return (payload, response.headers) if return_headers else payload
-            except ValueError:
-                raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response") from None
-
-        provider_code = ""
-        try:
-            error_body = response.json()
-            provider_code = str(error_body.get("code", "")) if isinstance(error_body, dict) else ""
-        except ValueError:
-            pass
-
-        if response.status_code in (401, 403) and access_token:
-            if response.status_code == 403:
-                raise ApiError(403, "permission_denied", "You do not have permission to perform this action")
-            raise ApiError(401, "invalid_access_token", "The access token is invalid or expired")
-        if response.status_code == 401:
-            raise ApiError(503, "supabase_configuration_error", "Authentication and data services are not configured correctly")
-        if response.status_code == 403 or provider_code == "42501":
-            raise ApiError(403, "permission_denied", "You do not have permission to perform this action")
-        if response.status_code == 404 and provider_code not in {"PGRST205", "PGRST202"}:
-            raise ApiError(404, "not_found", "The requested record was not found")
-        if response.status_code == 409 or provider_code == "23505":
-            raise ApiError(409, "conflict", "The request conflicts with an existing record")
-        if response.status_code == 429:
-            raise ApiError(429, "supabase_rate_limited", "Please retry the request later")
-        if response.status_code >= 500 or provider_code in {"PGRST202", "PGRST205"}:
-            logger.warning(
-                "Supabase returned an unavailable-service response",
-                extra={"provider_status": response.status_code, "provider_code": provider_code[:32]},
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO public.screening_inputs "
+                    "(job_id, input_type, position, candidate_label, filename, content_type, "
+                    " size_bytes, sha256, content, text_content) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [(job_id, *row) for row in rows],
+                )
+            conn.execute(
+                "INSERT INTO public.job_access_tokens (job_id, token_hash, created_at, expires_at) "
+                "VALUES (%s, %s, %s, %s)",
+                (job_id, token_hash, now, token_expires_at),
             )
-            raise ApiError(503, "supabase_unavailable", "Authentication and data services are temporarily unavailable")
-        raise ApiError(400, "invalid_data_request", "The request could not be processed")
+            self._insert_event(
+                conn, "job.created", job_id, correlation_id,
+                {"resume_count": sum(1 for r in rows if r[0] == InputType.RESUME_PDF.value)},
+            )
+        return CreatedJob(job_id=job_id, token_expires_at=token_expires_at)
 
-    async def verify_access_token(self, access_token: str) -> AuthenticatedUser:
-        payload = await self._send("GET", "/auth/v1/user", access_token=access_token)
+    @staticmethod
+    def _prepare_inputs(inputs: Sequence[NewInput]) -> list[tuple[Any, ...]]:
+        jd = [i for i in inputs if i.input_type in (InputType.JD_TEXT, InputType.JD_PDF)]
+        resumes = [i for i in inputs if i.input_type == InputType.RESUME_PDF]
+        if len(jd) != 1:
+            raise InvalidJobInput("exactly one job description (text or PDF) is required")
+        if not resumes:
+            raise InvalidJobInput("at least one resume PDF is required")
+
+        rows: list[tuple[Any, ...]] = []
+        ordered = [(jd[0], 0)] + [(r, idx) for idx, r in enumerate(resumes)]
+        for item, position in ordered:
+            if item.input_type == InputType.JD_TEXT:
+                text = item.text_content
+                if text is None or not text.strip():
+                    raise InvalidJobInput("job description text is empty")
+                if "\x00" in text:
+                    raise InvalidJobInput("job description text contains NUL characters")
+                payload = text.encode("utf-8")
+                content, text_content = None, text
+            else:
+                data = item.content
+                if not data:
+                    raise InvalidJobInput("PDF input is empty")
+                payload = bytes(data)
+                content, text_content = payload, None
+            if len(payload) > MAX_INPUT_BYTES_HARD:
+                raise InvalidJobInput("input exceeds the hard storage limit")
+            label = (item.candidate_label or "").strip() or None
+            if label is not None and len(label) > 100:
+                raise InvalidJobInput("candidate label is too long")
+            rows.append((
+                item.input_type.value, position, label, _safe_filename(item.filename),
+                item.content_type, len(payload), hashlib.sha256(payload).hexdigest(),
+                content, text_content,
+            ))
+        return rows
+
+    # ---- reads -----------------------------------------------------------
+    def get_job(self, job_id: uuid.UUID) -> JobRecord | None:
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM public.screening_jobs WHERE id = %s", (job_id,)
+            ).fetchone()
+        return JobRecord.from_row(row) if row else None
+
+    def get_inputs(self, job_id: uuid.UUID) -> list[JobInputRecord]:
+        """Return all inputs (JD first, then resumes by position). Loads PDF bytes."""
+        with self._db.transaction() as conn:
+            rows = conn.execute(
+                f"SELECT {_INPUT_COLUMNS} FROM public.screening_inputs WHERE job_id = %s "
+                "ORDER BY (input_type = 'resume_pdf'), position",
+                (job_id,),
+            ).fetchall()
+        return [JobInputRecord.from_row(r) for r in rows]
+
+    # ---- tokens ----------------------------------------------------------
+    def verify_token(self, job_id: uuid.UUID, token_hash: bytes) -> bool:
+        """True iff a non-revoked, unexpired token with this hash exists for the job.
+
+        Lookup is by the SHA-256 of a high-entropy token, so equality search
+        leaks nothing useful through timing.
+        """
+        token_hash = bytes(token_hash)
+        if len(token_hash) != 32:
+            return False
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT 1 AS ok FROM public.job_access_tokens "
+                "WHERE job_id = %s AND token_hash = %s AND revoked_at IS NULL "
+                "AND expires_at > clock_timestamp() LIMIT 1",
+                (job_id, token_hash),
+            ).fetchone()
+        return row is not None
+
+    def revoke_tokens(self, job_id: uuid.UUID) -> int:
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE public.job_access_tokens SET revoked_at = clock_timestamp() "
+                "WHERE job_id = %s AND revoked_at IS NULL",
+                (job_id,),
+            )
+            return cur.rowcount
+
+    # ---- queue -----------------------------------------------------------
+    def claim_next_job(self, worker_id: str, lease_seconds: int) -> JobRecord | None:
+        """Atomically claim one due job, or return None. Reclaims expired leases."""
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                f"SELECT {_JOB_COLUMNS} FROM public.claim_next_job(%s, %s)",
+                (worker_id, lease_seconds),
+            ).fetchone()
+        return JobRecord.from_row(row) if row else None
+
+    def heartbeat(self, job_id: uuid.UUID, worker_id: str, attempt: int, lease_seconds: int) -> bool:
+        """Extend the lease. False means the worker lost the job and must stop."""
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT public.heartbeat_job(%s, %s, %s, %s) AS ok",
+                (job_id, worker_id, attempt, lease_seconds),
+            ).fetchone()
+        return bool(row and row["ok"])
+
+    def complete_job(
+        self, job_id: uuid.UUID, worker_id: str, attempt: int, result: dict[str, Any]
+    ) -> CompleteOutcome:
+        """Idempotent, fenced completion. Never overwrites a newer attempt's result."""
         try:
-            return AuthenticatedUser.model_validate(payload)
-        except ValidationError:
-            raise ApiError(401, "invalid_access_token", "The access token is invalid or expired") from None
+            payload = _dumps_strict(result)
+        except (TypeError, ValueError) as exc:
+            raise InvalidJobInput("result is not strictly JSON-serialisable") from exc
+        if len(payload.encode("utf-8")) > MAX_RESULT_BYTES:
+            raise InvalidJobInput("result exceeds the maximum stored size")
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT public.complete_job(%s, %s, %s, %s::jsonb) AS outcome",
+                (job_id, worker_id, attempt, Jsonb(result, dumps=_dumps_strict)),
+            ).fetchone()
+        return self._parse_outcome(CompleteOutcome, row)
 
-    async def select(self, table: str, access_token: str, *, params: Mapping[str, str]) -> list[dict[str, Any]]:
-        payload = await self._send(
-            "GET",
-            f"/rest/v1/{quote(table, safe='')}",
-            access_token=access_token,
-            params=params,
-        )
-        if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
-            raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response")
-        return payload
-
-    async def count(self, table: str, access_token: str, *, params: Mapping[str, str]) -> int:
-        _, headers = await self._send(
-            "GET",
-            f"/rest/v1/{quote(table, safe='')}",
-            access_token=access_token,
-            params={**params, "select": "id"},
-            headers={"Prefer": "count=exact", "Range": "0-0"},
-            return_headers=True,
-        )
-        content_range = headers.get("content-range", "")
-        try:
-            return int(content_range.rsplit("/", 1)[1])
-        except (IndexError, ValueError):
-            raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response") from None
-
-    async def insert(self, table: str, access_token: str, values: Mapping[str, Any]) -> dict[str, Any]:
-        payload = await self._send(
-            "POST",
-            f"/rest/v1/{quote(table, safe='')}",
-            access_token=access_token,
-            json_body=dict(values),
-            headers={"Prefer": "return=representation"},
-        )
-        if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
-            raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response")
-        return payload[0]
-
-    async def update(
+    def fail_job(
         self,
-        table: str,
-        access_token: str,
-        filters: Mapping[str, str],
-        values: Mapping[str, Any],
+        job_id: uuid.UUID,
+        worker_id: str,
+        attempt: int,
         *,
-        select: str,
-    ) -> list[dict[str, Any]]:
-        payload = await self._send(
-            "PATCH",
-            f"/rest/v1/{quote(table, safe='')}",
-            access_token=access_token,
-            params={**filters, "select": select},
-            json_body=dict(values),
-            headers={"Prefer": "return=representation"},
-        )
-        if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
-            raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response")
-        return payload
+        error_code: str,
+        error_message: str,
+        retryable: bool,
+        backoff_seconds: int = 0,
+    ) -> FailOutcome:
+        """Fenced failure: re-queue with backoff if retryable and attempts remain."""
+        if not _ERROR_CODE_RE.match(error_code):
+            raise InvalidJobInput("error_code must match ^[a-z0-9_]{1,64}$")
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT public.fail_job(%s, %s, %s, %s, %s, %s, %s) AS outcome",
+                (job_id, worker_id, attempt, error_code, error_message[:500],
+                 retryable, backoff_seconds),
+            ).fetchone()
+        return self._parse_outcome(FailOutcome, row)
 
-    async def rpc(self, function: str, access_token: str, values: Mapping[str, Any]) -> Any:
-        return await self._send(
-            "POST",
-            f"/rest/v1/rpc/{quote(function, safe='')}",
-            access_token=access_token,
-            json_body=dict(values),
-        )
-
-
-class SupabaseWorkerClient:
-    """Server-only service-role operations used exclusively by the queue worker."""
-
-    def __init__(self, settings: Settings, http_client: httpx.AsyncClient) -> None:
-        if settings.supabase_url is None or settings.supabase_service_role_key is None:
-            raise ApiError(503, "worker_not_configured", "The screening worker requires Supabase service credentials")
-        self._base_url = str(settings.supabase_url).rstrip("/")
-        self._service_key = settings.supabase_service_role_key.get_secret_value()
-        self._http = http_client
-
-    def _headers(self, content_type: str | None = None) -> dict[str, str]:
-        headers = {
-            "apikey": self._service_key,
-            "Authorization": f"Bearer {self._service_key}",
-            "Accept": "application/json",
-        }
-        if content_type:
-            headers["Content-Type"] = content_type
-        return headers
-
-    async def _json(self, path: str, values: dict[str, Any]) -> Any:
+    @staticmethod
+    def _parse_outcome(enum_type: type[StrEnum], row: Mapping[str, Any] | None) -> Any:
         try:
-            response = await self._http.post(
-                f"{self._base_url}{path}",
-                headers=self._headers("application/json"),
-                json=values,
-                follow_redirects=False,
-                timeout=httpx.Timeout(20.0, connect=5.0),
+            return enum_type(row["outcome"])  # type: ignore[index]
+        except (TypeError, KeyError, ValueError) as exc:
+            raise DatabaseError("unexpected queue function result") from exc
+
+    # ---- events ----------------------------------------------------------
+    @staticmethod
+    def _insert_event(
+        conn: psycopg.Connection[dict[str, Any]],
+        event_type: str,
+        job_id: uuid.UUID | None,
+        correlation_id: str | None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        if not _EVENT_TYPE_RE.match(event_type):
+            raise InvalidJobInput("invalid audit event type")
+        conn.execute(
+            "INSERT INTO public.audit_events (job_id, event_type, correlation_id, detail) "
+            "VALUES (%s, %s, %s, %s)",
+            (job_id, event_type, (correlation_id or None) and correlation_id[:64],
+             Jsonb(detail or {}, dumps=_dumps_strict)),
+        )
+
+    def record_event(
+        self,
+        event_type: str,
+        *,
+        job_id: uuid.UUID | None = None,
+        correlation_id: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a minimal audit event. ``detail`` must not contain secrets or PII."""
+        with self._db.transaction() as conn:
+            self._insert_event(conn, event_type, job_id, correlation_id, detail)
+
+    # ---- retention cleanup ----------------------------------------------
+    def find_expired_job_ids(self, limit: int = 100) -> list[uuid.UUID]:
+        """Terminal jobs past retention. Active (queued/processing) jobs never match."""
+        with self._db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT id FROM public.screening_jobs "
+                "WHERE status IN ('completed', 'failed') AND retention_expires_at <= clock_timestamp() "
+                "ORDER BY retention_expires_at LIMIT %s",
+                (limit,),
+            ).fetchall()
+        return [r["id"] for r in rows]
+
+    def delete_expired_jobs(self, *, limit: int = 100, dry_run: bool = True) -> list[uuid.UUID]:
+        """Delete (or, by default, only list) expired terminal jobs.
+
+        Cascades to inputs and tokens. Status is re-checked inside the DELETE.
+        """
+        if dry_run:
+            return self.find_expired_job_ids(limit)
+        with self._db.transaction() as conn:
+            rows = conn.execute(
+                "DELETE FROM public.screening_jobs WHERE id IN ("
+                "  SELECT id FROM public.screening_jobs "
+                "  WHERE status IN ('completed', 'failed') "
+                "    AND retention_expires_at <= clock_timestamp() "
+                "  ORDER BY retention_expires_at LIMIT %s FOR UPDATE SKIP LOCKED"
+                ") AND status IN ('completed', 'failed') RETURNING id",
+                (limit,),
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            for jid in ids:
+                self._insert_event(conn, "job.purged", None, None, {"job_id": str(jid)})
+        return ids
+
+    def delete_old_audit_events(
+        self, *, older_than: datetime, limit: int = 1000, dry_run: bool = True
+    ) -> int:
+        """Delete (or count) audit events older than ``older_than`` (UTC-aware)."""
+        if older_than.tzinfo is None:
+            raise InvalidJobInput("older_than must be timezone-aware")
+        with self._db.transaction() as conn:
+            if dry_run:
+                row = conn.execute(
+                    "SELECT count(*) AS n FROM (SELECT 1 FROM public.audit_events "
+                    "WHERE created_at < %s ORDER BY id LIMIT %s) t",
+                    (older_than, limit),
+                ).fetchone()
+                return int(row["n"]) if row else 0
+            cur = conn.execute(
+                "DELETE FROM public.audit_events WHERE id IN ("
+                "  SELECT id FROM public.audit_events WHERE created_at < %s "
+                "  ORDER BY id LIMIT %s)",
+                (older_than, limit),
             )
-        except httpx.HTTPError:
-            raise ApiError(503, "worker_service_unavailable", "The screening worker cannot reach Supabase") from None
-        if response.status_code in (408, 429) or response.status_code >= 500:
-            raise ApiError(503, "worker_service_unavailable", "The screening worker cannot reach Supabase")
-        if response.status_code >= 400:
-            provider_code = ""
-            try:
-                body = response.json()
-                provider_code = str(body.get("code", "")) if isinstance(body, dict) else ""
-            except ValueError:
-                pass
-            if response.status_code in (401, 403) or provider_code == "42501":
-                raise ApiError(403, "worker_permission_denied", "Supabase rejected worker authorization")
-            if provider_code == "40001":
-                raise ApiError(409, "worker_lease_lost", "The worker lease is no longer active")
-            raise ApiError(400, "worker_service_rejected", "Supabase rejected a screening-worker operation")
-        if not response.content:
-            return None
-        try:
-            return response.json()
-        except ValueError:
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid worker response") from None
-
-    async def claim(self, worker_id: str, lease_seconds: int = 900) -> dict[str, Any] | None:
-        result = await self._json("/rest/v1/rpc/claim_screening_job", {
-            "p_worker_id": worker_id,
-            "p_lease_seconds": lease_seconds,
-        })
-        if not isinstance(result, list):
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid queue response")
-        if not result:
-            return None
-        if len(result) != 1 or not isinstance(result[0], dict):
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid queue response")
-        return result[0]
-
-    async def enqueue_expired_resumes(self, limit: int = 100) -> int:
-        result = await self._json("/rest/v1/rpc/enqueue_expired_resume_cleanup", {"p_limit": limit})
-        if not isinstance(result, int):
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid retention response")
-        return result
-
-    async def claim_storage_cleanup(self, worker_id: str, lease_seconds: int = 300) -> dict[str, Any] | None:
-        result = await self._json("/rest/v1/rpc/claim_storage_cleanup_job", {
-            "p_worker_id": worker_id,
-            "p_lease_seconds": lease_seconds,
-        })
-        if not isinstance(result, list):
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid cleanup queue response")
-        if not result:
-            return None
-        if len(result) != 1 or not isinstance(result[0], dict):
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid cleanup queue response")
-        return result[0]
-
-    async def delete_private_resume(self, storage_path: str) -> None:
-        bucket = quote("private-resumes", safe="")
-        path = quote(storage_path, safe="/")
-        try:
-            response = await self._http.delete(
-                f"{self._base_url}/storage/v1/object/{bucket}/{path}",
-                headers=self._headers(),
-                follow_redirects=False,
-                timeout=httpx.Timeout(20.0, connect=5.0),
-            )
-        except httpx.HTTPError:
-            raise ApiError(503, "storage_cleanup_unavailable", "The private file cleanup service is unavailable") from None
-        if response.status_code in (404, 410):
-            return
-        if response.status_code in (408, 429) or response.status_code >= 500:
-            raise ApiError(503, "storage_cleanup_unavailable", "The private file cleanup service is unavailable")
-        if response.status_code >= 400:
-            raise ApiError(400, "storage_cleanup_rejected", "The private file cleanup request was rejected")
-
-    async def complete_storage_cleanup(self, cleanup_id: str, worker_id: str) -> None:
-        await self._json("/rest/v1/rpc/complete_storage_cleanup_job", {
-            "p_cleanup_job_id": cleanup_id,
-            "p_worker_id": worker_id,
-        })
-
-    async def fail_storage_cleanup(self, cleanup_id: str, worker_id: str, code: str, retryable: bool) -> str:
-        result = await self._json("/rest/v1/rpc/fail_storage_cleanup_job", {
-            "p_cleanup_job_id": cleanup_id,
-            "p_worker_id": worker_id,
-            "p_error_code": code,
-            "p_retryable": retryable,
-        })
-        if not isinstance(result, str):
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid cleanup status")
-        return result
-
-    async def download_resume(self, storage_path: str, *, max_bytes: int) -> bytes:
-        bucket = quote("private-resumes", safe="")
-        path = quote(storage_path, safe="/")
-        try:
-            response = await self._http.get(
-                f"{self._base_url}/storage/v1/object/{bucket}/{path}",
-                headers=self._headers(),
-                follow_redirects=False,
-                timeout=httpx.Timeout(30.0, connect=5.0),
-            )
-        except httpx.HTTPError:
-            raise ApiError(503, "worker_storage_unavailable", "The screening worker cannot retrieve the private resume") from None
-        if response.status_code in (408, 429) or response.status_code >= 500:
-            raise ApiError(503, "worker_storage_unavailable", "The screening worker cannot retrieve the private resume")
-        if response.status_code >= 400:
-            raise ApiError(404, "worker_resume_not_found", "The private resume is unavailable")
-        if len(response.content) > max_bytes:
-            raise ApiError(413, "worker_resume_too_large", "The private resume exceeds the configured size limit")
-        return response.content
-
-    async def save_job_requirements(self, job_id: str, organization_id: str, requirements: dict, version: str) -> Any:
-        return await self._json("/rest/v1/rpc/save_job_requirements", {
-            "p_job_id": job_id,
-            "p_organization_id": organization_id,
-            "p_requirements": requirements,
-            "p_version": version,
-        })
-
-    async def complete(self, values: dict[str, Any]) -> None:
-        await self._json("/rest/v1/rpc/complete_screening_job", values)
-
-    async def fail(self, values: dict[str, Any]) -> str:
-        result = await self._json("/rest/v1/rpc/fail_screening_job", values)
-        if not isinstance(result, str):
-            raise ApiError(503, "worker_invalid_response", "Supabase returned an invalid worker status")
-        return result
-
-    async def upload_resume(self, access_token: str, storage_path: str, content: bytes) -> None:
-        bucket = quote(self._bucket, safe="")
-        path = quote(storage_path, safe="/")
-        await self._send(
-            "POST",
-            f"/storage/v1/object/{bucket}/{path}",
-            access_token=access_token,
-            content=content,
-            headers={"Content-Type": "application/pdf", "x-upsert": "true"},
-        )
-
-    async def delete_resume_object(self, access_token: str, storage_path: str) -> None:
-        bucket = quote(self._bucket, safe="")
-        path = quote(storage_path, safe="/")
-        await self._send("DELETE", f"/storage/v1/object/{bucket}/{path}", access_token=access_token)
-
-    async def create_signed_resume_url(self, access_token: str, storage_path: str, expires_in: int) -> str:
-        bucket = quote(self._bucket, safe="")
-        path = quote(storage_path, safe="/")
-        payload = await self._send(
-            "POST",
-            f"/storage/v1/object/sign/{bucket}/{path}",
-            access_token=access_token,
-            json_body={"expiresIn": expires_in},
-        )
-        signed_path = payload.get("signedURL") if isinstance(payload, dict) else None
-        if not isinstance(signed_path, str):
-            raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response")
-        if signed_path.startswith("https://") or signed_path.startswith("http://"):
-            from urllib.parse import urlsplit
-
-            signed_parts = urlsplit(signed_path)
-            base_parts = urlsplit(self._base_url)
-            if signed_parts.scheme != base_parts.scheme or signed_parts.netloc != base_parts.netloc:
-                raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response")
-            return signed_path
-        if signed_path.startswith("/storage/v1/"):
-            return f"{self._base_url}{signed_path}"
-        if signed_path.startswith("/object/"):
-            return f"{self._base_url}/storage/v1{signed_path}"
-        raise ApiError(503, "supabase_invalid_response", "Authentication and data services returned an invalid response")
+            return cur.rowcount

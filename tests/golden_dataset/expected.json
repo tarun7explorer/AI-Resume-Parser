@@ -1,0 +1,32 @@
+{
+  "format_version": 1,
+  "synthetic_only": true,
+  "rounding": "weighted total rounded half-up to one decimal; percentage equals score times ten",
+  "cases": [
+    {
+      "case_id": "synthetic_all_fives",
+      "category_scores": {
+        "required_skills": 5,
+        "experience_projects": 5,
+        "responsibilities_capabilities": 5,
+        "qualifications": 5,
+        "evidence_strength": 5
+      },
+      "not_applicable": [],
+      "score_out_of_10": 5.0,
+      "percentage": 50
+    },
+    {
+      "case_id": "synthetic_qualifications_inapplicable",
+      "category_scores": {
+        "required_skills": 8,
+        "experience_projects": 6,
+        "responsibilities_capabilities": 7,
+        "evidence_strength": 5
+      },
+      "not_applicable": ["qualifications"],
+      "score_out_of_10": 6.7,
+      "percentage": 67
+    }
+  ]
+}

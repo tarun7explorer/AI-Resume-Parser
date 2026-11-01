@@ -1,77 +1,46 @@
-ai-resume-screening/
-│
-├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── dependencies.py
-│   ├── security.py
-│   ├── database.py
-│   ├── exceptions.py
-│   │
-│   ├── api_auth.py
-│   ├── api_jobs.py
-│   ├── api_candidates.py
-│   ├── api_screening.py
-│   │
-│   ├── schema_auth.py
-│   ├── schema_jobs.py
-│   ├── schema_candidates.py
-│   ├── schema_screening.py
-│   │
-│   ├── crud_auth.py
-│   ├── crud_jobs.py
-│   ├── crud_candidates.py
-│   ├── crud_screening.py
-│   │
-│   ├── screening.py
-│   ├── scoring.py
-│   ├── matching.py
-│   ├── resume_parser.py
-│   ├── integrity.py
-│   ├── links.py
-│   ├── ai.py
-│   └── worker.py
-│
-├── static/
-│   ├── index.html
-│   ├── dashboard.html
-│   ├── screening.html
-│   ├── candidate.html
-│   │
-│   ├── css/
-│   │   ├── global.css
-│   │   ├── dashboard.css
-│   │   ├── screening.css
-│   │   └── candidate.css
-│   │
-│   ├── js/
-│   │   ├── api.js
-│   │   ├── auth.js
-│   │   ├── dashboard.js
-│   │   ├── screening.js
-│   │   └── candidate.js
-│   │
-│   └── assets/
-│
-├── supabase/
-│   └── schema.sql
-│
-├── tests/
-│   ├── conftest.py
-│   ├── test_auth.py
-│   ├── test_scoring.py
-│   ├── test_screening.py
-│   ├── test_security.py
-│   └── test_resume_parser.py
-│
-├── scripts/
-│   ├── create_admin.py
-│   └── evaluate_scoring.py
-│
-├── .env.example
-├── .gitignore
-├── pyproject.toml
-├── uv.lock
-├── render.yaml
-├── pytest.ini
-└── README.md
+Resume-Parser/
+|
+|-- app/
+|   |-- __init__.py          # Package version
+|   |-- main.py              # FastAPI upload, protected status, health/readiness, static UI
+|   |-- worker.py            # Separate durable worker, lease heartbeat and bounded retries
+|   |-- worker_support.py    # Worker settings, interfaces and sanitized failure classes
+|   |-- worker_repository.py # psycopg adapter between worker and PostgreSQL repository
+|   |-- screening.py         # PDF -> AI -> evidence -> deterministic scoring pipeline
+|   |-- scoring.py           # Validated category inputs, weights, rounding and total
+|   |-- evidence.py          # Source quote verification and page provenance
+|   |-- resume_parser.py     # Safe PDF validation and page-level text extraction; no OCR
+|   |-- ai_provider.py       # Configured Groq/NVIDIA-compatible client and retries
+|   |-- ai_schemas.py        # Strict validated model output types
+|   |-- prompts.py           # Fixed instructions and untrusted document delimiters
+|   |-- database.py          # psycopg 3 pool, records and job repository
+|   |-- migrate.py           # Transactional versioned PostgreSQL migrations
+|   |-- config.py            # Environment settings and validation
+|   |-- schemas.py           # Strict API request/response models
+|   |-- pipeline_types.py    # Pipeline ports and data types
+|   |-- security.py          # Token hashing, authorization helpers and rate limiting
+|   |-- exceptions.py        # Safe HTTP application errors
+|   |-- utils.py             # Filenames, hashes and UTC timestamps
+|   |-- logger.py            # Structured logs with secret redaction
+|
+|-- db/
+|   |-- migrations/
+|       |-- 20261031_01_init.sql
+|       |-- 20261031_02_queue_functions.sql
+|
+|-- static/
+|   |-- index.html
+|   |-- css/style.css
+|   |-- js/api.js
+|   |-- js/upload.js
+|   |-- js/results.js
+|
+|-- scripts/cleanup.py       # Bounded cleanup, dry-run unless --delete is explicit
+|-- tests/                   # Synthetic PDF, evidence, scoring, security, API and worker tests
+|-- render.yaml              # Render web, worker, PostgreSQL and cleanup cron
+|-- Dockerfile
+|-- pyproject.toml
+|-- uv.lock
+|-- .env.example
+|-- .python-version
+|-- README.md

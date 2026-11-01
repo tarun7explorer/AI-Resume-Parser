@@ -1,29 +1,30 @@
-# Secrets and local configuration
+# Secrets and local config
 .env
 .env.*
 !.env.example
-*.pem
-*.key
 
-# Python and tooling
-node_modules/
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
 .venv/
-venv/
-ENV/
+.uv-cache/
+.uv-python/
+uv.lock.empty
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
-dist/
-build/
 *.egg-info/
+build/
+dist/
 
-# Editors and OS files
-.vscode/
+# Editors / OS
 .idea/
+.vscode/
 .DS_Store
-Thumbs.db
+
+# Local data: never commit real resumes
+tmp/
+*.log
+tests/golden_dataset/private/

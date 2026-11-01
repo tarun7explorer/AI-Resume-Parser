@@ -1,397 +1,913 @@
-AI Resume Screening
-& Candidate Intelligence
+AI RESUME SCREENING
 
-Project vision, product capabilities, technical approach, and intended outcomes
+Complete Project Overview
+& Render Deployment Guide
 
-PROJECT PURPOSE
+Resume-Parser
 
-Help recruiters review resumes faster and more consistently by comparing candidate evidence with a job description, highlighting document-integrity concerns, checking profile links, and saving explainable screening reports.
+Architecture • Features • Inputs and outputs • Scoring • Security • Testing • Deployment • Operations
 
-Prepared as a practical implementation brief
+Scope
 
-
-Project Overview | Concept and technical plan
-
-AI RESUME SCREENING & CANDIDATE INTELLIGENCE
-
-1. Executive Summary
-
-The AI Resume Screening & Candidate Intelligence Platform is a web application for recruiters. A recruiter uploads one or more resume PDFs and supplies a job description either as a PDF or pasted text. The application extracts relevant information, compares it with the role requirements, and creates a structured report for each resume.
-
-The system combines conventional Python processing with AI-assisted language understanding. Python handles file validation, text extraction, link detection, scoring calculations, and persistence. A language model helps summarize the resume and interpret how its evidence relates to the job description. The final result is validated before it is shown or saved.
-
-The first release is intended as a controlled pilot using free-tier services where practical. Free tiers have limits and are not a guarantee of continuous availability, high-volume processing, or production service-level agreements.
-
-2. Vision and End Goal
-
-Vision
-
-Make resume screening clearer, faster, and more evidence-based. The platform should give recruiters a consistent starting point for reviewing applicants instead of relying only on keyword searches or an unstructured AI-generated opinion.
-
-End goal
-
-Let a recruiter sign in, create a job screening, and upload resume PDFs or paste/upload a job description.
-
-Produce a concise candidate summary, job-match score, classification score, matched requirements, missing information, and supporting evidence.
-
-Flag potentially hidden or suspicious resume text for human review without automatically treating every anomaly as misconduct.
-
-Detect whether LinkedIn, GitHub, and portfolio links are present and report the status of basic format/accessibility checks.
-
-Save screening history and reports securely so the client can revisit, search, filter, and compare candidates for a role.
-
-Make failures visible and recoverable: incomplete analysis must not be presented as a completed or verified result.
-
-3. Intended Users and Main Use Case
-
-Primary users are recruiters, hiring coordinators, or an authorized client-side administrator. The interface should be clean and simple, with minimal setup and clear explanations of scores and warnings.
-
-Typical user journey
-
-Sign in through the secure recruiter login.
-
-Create or select a job and provide its job description.
-
-Upload one resume or a batch of PDF resumes.
-
-Review processing status while each resume is analyzed.
-
-Open each candidate report to inspect the score, evidence, missing requirements, profile links, and integrity findings.
-
-Filter and compare reports, then make a human-led decision about who should progress.
-
-4. Core Features
-
-Feature
-
-What it does
-
-Resume intake and parsing
-
-Accept PDF resumes, validate file type and size, extract text and metadata, and use OCR for scanned pages when needed.
-
-Job description analysis
-
-Accept pasted text or a PDF and identify required skills, preferred skills, qualifications, and responsibilities.
-
-Resume summary
-
-Generate a short, readable summary of relevant experience, skills, education, and projects based on the content available.
-
-Requirement-by-requirement matching
-
-Show which requirements are supported, partially supported, missing, or unclear, with evidence references where possible.
-
-Two screening scores
-
-Provide a job-match score out of 10 and a normalized classification score out of 100, with visible scoring criteria.
-
-Candidate classification
-
-Use configurable bands such as Not Suitable, Considered, and Priority for Interview Review; these are review aids, not automatic hiring decisions.
-
-Hidden-text and integrity analysis
-
-Inspect extracted text, font properties, placement, visibility clues, and possible prompt-injection attempts; show the suspicious text and why it was flagged.
-
-Profile link detection
-
-Extract LinkedIn, GitHub, and portfolio URLs and label each as found, not detected, malformed, or unable to verify.
-
-Recruiter dashboard
-
-Show screening history, job filters, candidate scores, processing status, warnings, and links to detailed reports.
-
-Persistent report storage
-
-Save job details, candidate metadata, screening results, score versions, evidence, status, and file references in Supabase.
-
-Exports and review
-
-Support appropriate report viewing and CSV export, subject to access permissions and the client's data-handling policy.
-
-5. Technology Stack
-
-Layer
-
-Technology
-
-Purpose
-
-Frontend
-
-HTML5, CSS3, vanilla JavaScript
-
-A lightweight, responsive recruiter interface without a frontend framework.
-
-Backend
-
-Python and FastAPI
-
-REST API, input validation, authentication checks, workflow orchestration, and report delivery.
-
-AI provider
-
-Groq API as the initial provider; NVIDIA API optional
-
-Language understanding, structured extraction, summaries, and explanations. Use only a currently available model and approved terms.
-
-PDF processing
-
-PyMuPDF and Tesseract OCR
-
-Extract PDF text and layout clues; OCR scanned pages when required.
-
-Matching and scoring
-
-Python rules, skill normalization, optional scikit-learn utilities
-
-Deterministic weighted scoring and evidence-based requirement matching.
-
-Authentication and database
-
-Supabase Auth and PostgreSQL
-
-Recruiter authentication, relational records, access policies, and saved reports.
-
-File storage
-
-Supabase Storage private bucket
-
-Store original resume PDFs privately and serve them only through authorized, short-lived access.
+Design target
 
 Hosting
 
-Render
+FastAPI web service, background worker, PostgreSQL database, and cleanup cron hosted on Render.
 
-Host the FastAPI application and serve the static frontend. Free-tier behavior and resource limits must be considered.
+Frontend
 
-Python tooling
+HTML, CSS, and vanilla JavaScript served by the FastAPI web service.
 
-uv with pyproject.toml and uv.lock
+AI
 
-Reproducible dependency resolution and consistent installation from a lockfile.
+Groq or NVIDIA-compatible API configured with server-side environment variables.
 
-Testing
+Core workflow
 
-pytest
+Upload → queued job → worker processing → evidence verification → deterministic scoring → results.
 
-Unit, integration, security, parsing, scoring, and workflow tests.
+Important architecture note
 
-6. How the System Works
+Your supplied tree references Supabase RPC, RLS, and storage. That is not a Render-only infrastructure deployment. This guide explains the strict Render-only version using Render Postgres and the code/schema changes needed to remove Supabase dependencies. A hosted Groq/NVIDIA model remains an external API unless you self-host inference.
 
-Receive and validate input: Authenticate the recruiter, validate uploads, enforce size/page limits, and store the original files in private storage.
 
-Extract document content: Extract text and layout information from each PDF. Use OCR when the PDF is image-based or has insufficient text.
+Technical blueprint • Prepared 31 October 2026 • Verify against implementation before production
 
-Analyze document integrity: Look for unusual invisible/small text, text-position anomalies, and instruction-like content that may attempt to influence an AI model.
+RESUME-PARSER  |  PROJECT & DEPLOYMENT BLUEPRINT
 
-Interpret the job: Convert the job description into a structured set of requirements with weights and explicit mandatory criteria.
+Contents
 
-Map resume evidence: Use deterministic matching and AI-assisted interpretation to map requirements to resume passages. Validate that cited evidence exists in extracted text.
+1. Executive overview
 
-Calculate scores: Calculate scores in Python using versioned rules. The LLM provides structured observations but does not independently decide the final score.
+2. Product goals and user workflow
 
-Validate and persist: Validate the report schema, record the model and scoring version, save the report, and mark the job complete only after persistence succeeds.
+3. Architecture and module responsibilities
 
-Show recruiter report: Present the summary, scores, evidence, gaps, profile links, warnings, and processing status in the dashboard.
+4. Inputs, outputs, and API contract
 
-7. Scoring and Classification Approach
+5. Scoring and evidence policy
 
-The application should show two distinct measures. The job-match score (out of 10) summarizes the degree of alignment between the resume evidence and the requirements of a specific job. The classification score (out of 100) is a normalized prioritization measure used to help recruiters decide which reports to review first.
+6. Data model and durable job lifecycle
 
-An initial configurable weighting proposal is:
+7. Security, privacy, and file handling
 
-Criterion
+8. Strict Render-only architecture
+
+9. Render deployment walkthrough
+
+10. Environment variables
+
+11. Testing and release checklist
+
+12. Operations and troubleshooting
+
+13. Limitations and decisions
+
+14. Official references
+
+
+Technical blueprint • Prepared 31 October 2026 • Verify against implementation before production
+
+RESUME-PARSER  |  PROJECT & DEPLOYMENT BLUEPRINT
+
+1. Executive overview
+
+Resume-Parser helps a recruiter compare one or more PDF resumes against a job description. The AI model interprets semantic relevance and proposes structured assessments. Python validates those assessments, verifies evidence, and calculates the final score. The system must not invent skills, qualifications, experience, quotations, or page numbers.
+
+The API should accept work quickly and return HTTP 202 Accepted with a job ID and per-job access token. A separate worker atomically claims queued jobs from PostgreSQL, processes documents, persists validated results, and marks each job completed or failed. The browser polls a protected status endpoint and renders the result when ready.
+
+Principle
+
+Requirement
+
+Evidence first
+
+Every displayed quote must be traceable to extracted resume text; page references must be grounded in page-level extraction.
+
+Deterministic scoring
+
+Python calculates final score from validated category values and documented weights; the LLM does not directly set the final score.
+
+Durable jobs
+
+Queued work and status survive process restarts; expired leases can be reclaimed safely.
+
+Least privilege
+
+Candidate data and secrets are not exposed to browser code, logs, or public storage.
+
+Honest failures
+
+Provider, parsing, and validation failures become explicit errors, never fabricated fallback scores.
+
+Human oversight
+
+The score is decision support, not a hiring probability or substitute for human review.
+
+2. Product goals and user workflow
+
+2.1 Primary workflow
+
+Recruiter opens the home page.
+
+Recruiter pastes a job description or uploads a job-description PDF.
+
+Recruiter uploads one or more resume PDFs within configured count, size, and page limits.
+
+Frontend performs early validation; backend independently validates every input.
+
+API persists a queued job and inputs, then returns 202 with job ID and access token.
+
+Browser polls the protected status endpoint with the token in an Authorization header, never in the URL.
+
+Worker atomically claims the job, parses PDFs, calls the AI provider, validates evidence, calculates scores, and persists the result.
+
+Browser displays the scorecard when completed, or a sanitized failure and retry/new-analysis option.
+
+Scheduled cleanup removes expired data according to retention rules and never deletes active jobs.
+
+2.2 Feature overview
+
+Feature
+
+Expected behavior
+
+JD input
+
+Pasted text or one PDF; reject empty or unreadable input.
+
+Multiple resumes
+
+Configurable number of PDF resumes, evaluated individually against the same JD.
+
+Asynchronous jobs
+
+Return promptly with 202; long-running AI work runs outside the HTTP request.
+
+Status polling
+
+queued, processing, completed, failed; result only when completed.
+
+Scorecard
+
+Overall score, category contributions, strengths, missing/uncertain evidence, validated quotes and page numbers when reliable.
+
+Provider resilience
+
+Timeouts, bounded transient retries, rate-limit handling, sanitized errors.
+
+Security
+
+Per-job authorization, request limits, private data handling and secret management.
+
+Cleanup
+
+Dry-run first; delete only confirmed expired records and orphaned files.
+
+3. Architecture and module responsibilities
+
+File/module
+
+Responsibility
+
+app/main.py
+
+FastAPI setup, upload and status endpoints, health/readiness checks, static UI serving, HTTP status codes. No long AI work in request handlers.
+
+app/worker.py
+
+Worker loop, atomic claim RPC/function, lease renewal, bounded retries, stale-job recovery, graceful shutdown and idempotent completion.
+
+app/screening.py
+
+Pipeline orchestration: parsing → AI → evidence → scoring → persistence.
+
+app/scoring.py
+
+Category validation, weight normalization, missing-evidence handling, deterministic total and rounding.
+
+app/evidence.py
+
+Text normalization, quote validation, original-text/page mapping, rejection of unsupported claims.
+
+app/resume_parser.py
+
+PDF signature, byte/page limits, parser errors, scanned/empty PDFs, page extraction and safe temporary cleanup.
+
+app/ai_provider.py
+
+Configured provider calls, timeouts, bounded retries, response parsing, rate-limit handling and sanitized errors.
+
+app/prompts.py
+
+System instructions and structured schema; treat resume/JD content as untrusted data.
+
+app/database.py
+
+DB connection/repository, job creation, claim function, state transitions, result persistence, token-hash checks and cleanup queries.
+
+app/schemas.py
+
+Strict input/output models, lengths, score bounds, job states and error response schema.
+
+app/security.py
+
+Cryptographic token generation, token hashing/verification, rate limits, trusted proxy handling and authorization helpers.
+
+app/logger.py
+
+Structured logs with request/job IDs; no keys, tokens, full resumes or full JDs.
+
+static/index.html
+
+Accessible upload and results views.
+
+static/css/style.css
+
+Responsive layout, form and error states, scorecard and mobile styling.
+
+static/js/api.js
+
+API calls, token handling, polling, timeout/error behavior and response validation.
+
+static/js/upload.js
+
+Client-side form validation; server-side validation remains authoritative.
+
+static/js/results.js
+
+Safe rendering of score, evidence, uncertainty and errors; use textContent or equivalent.
+
+tests/
+
+Unit/integration/security/parser/evidence/scoring/worker recovery tests.
+
+supabase/migrations/
+
+Only if Supabase remains. Strict Render-only deployment should use adapted PostgreSQL migrations and remove Supabase-specific SDK/storage dependencies.
+
+scripts/cleanup.py
+
+Scheduled cleanup with dry-run and safe deletion rules.
+
+render.yaml
+
+Blueprint for web, worker, Postgres and scheduled cleanup where supported.
+
+Dockerfile / pyproject.toml / uv.lock
+
+Consistent runtime, dependency lock and deployment commands.
+
+4. Inputs, outputs, and API contract
+
+4.1 Inputs
+
+Input
+
+Format / rule
+
+Validation
+
+Job description
+
+Required; pasted text OR JD PDF
+
+Reject empty text; cap text size; validate PDF signature, bytes, page count, encryption and extractable content.
+
+Resume files
+
+One or more PDFs
+
+Configurable count, byte and page limits; validate signature and extraction result; do not trust filename/MIME alone.
+
+Optional label
+
+Candidate label only if needed
+
+Allow only necessary metadata; minimize personal data.
+
+Access token
+
+Returned for created job
+
+High-entropy random token; send via Authorization header; store only token hash where practical.
+
+4.2 Example upload request
+
+POST /api/screenings
+Content-Type: multipart/form-data
+
+job_description_text=<optional pasted JD>
+job_description_pdf=<optional JD PDF>
+resumes=<resume_1.pdf>
+resumes=<resume_2.pdf>
+
+Exactly one JD source must be provided: pasted text or a JD PDF. Resume files are required. Enforce the rule on the backend, not only by disabling the Analyze button.
+
+4.3 API endpoints
+
+Endpoint
+
+Success
+
+Behavior
+
+POST /api/screenings
+
+202 Accepted
+
+Validate inputs, persist job/inputs, return job_id, queued status and token. Do not wait for full AI processing.
+
+GET /api/status/{job_id}
+
+200 OK
+
+Requires job-token authorization; return status and result only when completed.
+
+GET /health
+
+200 OK
+
+Liveness only; no secrets or internal configuration.
+
+GET /ready (optional)
+
+200 or 503
+
+Readiness for essential dependencies; keep separate from liveness.
+
+POST /api/screenings/{job_id}/retry (optional)
+
+202 Accepted
+
+Only with explicit retry semantics and verified authorization.
+
+4.4 Illustrative 202 response
+
+{
+  "job_id": "server-generated-uuid",
+  "status": "queued",
+  "access_token": "high-entropy-one-time-secret",
+  "status_endpoint": "/api/status/server-generated-uuid",
+  "poll_after_seconds": 2
+}
+
+This is a proposed contract, not a claim about existing code. Deliver the token over TLS, never log it, never place it in the URL, and minimize browser retention.
+
+4.5 Illustrative completed result
+
+{
+  "job_id": "server-generated-uuid",
+  "status": "completed",
+  "results": [{
+    "candidate_label": "Resume 1",
+    "score_out_of_10": 7.4,
+    "percentage": 74,
+    "categories": [
+      {"name": "Required skills", "score": 8.0, "weight": 0.30, "contribution": 2.40},
+      {"name": "Experience and projects", "score": 7.0, "weight": 0.25, "contribution": 1.75}
+    ],
+    "strengths": ["Evidence-backed strengths"],
+    "missing_or_uncertain_evidence": ["Requirement not demonstrated in extracted text"],
+    "evidence": [{"claim": "Validated claim", "quote": "Exact extracted excerpt", "page": 2}],
+    "evidence_coverage": 0.86,
+    "limitations": ["Decision support, not a hiring probability"]
+  }]
+}
+
+All values are illustrative. Evidence coverage must have a documented formula and remain distinct from suitability score. Every quote and page must be validated against source text.
+
+4.6 Job states
+
+State
+
+Meaning
+
+Transition
+
+queued
+
+Persisted, waiting for worker
+
+→ processing; permanent validation failures may become failed.
+
+processing
+
+Claimed with active lease
+
+→ completed; → queued for bounded retry; → failed after permanent error/exhausted attempts.
+
+completed
+
+Validated result stored
+
+Terminal; do not accidentally reprocess.
+
+failed
+
+No accepted result; safe error recorded
+
+Terminal unless an authorized retry transition is explicitly supported.
+
+5. Scoring and evidence policy
+
+AI proposes semantic category assessments; Python validates them, checks evidence, normalizes applicable weights, and computes the final score. Never trust an LLM-generated total without recalculation.
+
+Category
 
 Initial weight
 
-Required technical skills
+Assessment
+
+Required skills
 
 30%
 
-Relevant experience and projects
+Required skills and justified equivalent terminology.
+
+Experience and projects
 
 25%
 
-Job responsibilities
+Relevant tasks, projects, accomplishments and scope.
+
+Responsibilities/capabilities
 
 20%
+
+Evidence mapped to actual job responsibilities.
 
 Qualifications
 
 10%
 
-Strength and traceability of supporting evidence
+Relevant stated education/certifications, where job-related.
+
+Evidence strength
 
 15%
 
-Total
+Specificity, traceability and support for claims.
 
-100%
+These weights are starting assumptions, not validated hiring science. Calibrate with qualified reviewers and job-specific evaluation. Do not use protected or irrelevant characteristics.
 
-Illustrative classification bands to calibrate with the client:
+Validate all category scores are finite and within the documented range, e.g. 0–10.
 
-Score range
+With weights represented as fractions, contribution = category_score × normalized_weight; total remains on a 0–10 scale.
 
-Suggested label
+Normalize only categories genuinely not applicable. Do not label missing evidence as inapplicable just to improve a score.
 
-0–39
+Calculate percentage as final score × 10 with one documented rounding rule.
 
-Not Suitable for this role based on current evidence
+Avoid double-counting one achievement across categories without distinct supporting evidence.
 
-40–74
+Distinguish 'not found in extracted text' from 'candidate lacks the skill'. Poor extraction should reduce confidence, not prove inadequacy.
 
-Considered — additional recruiter review recommended
+Provider/schema/evidence failures must not silently fall back to keyword scores.
 
-75–100
+5.1 Evidence validation
 
-Priority for Interview Review
+Preserve page-level text and source offsets where possible.
 
-These weights and thresholds are starting assumptions, not scientifically validated cutoffs. They should be tested against representative, human-reviewed examples and adjusted for each job family. Missing resume information should be marked as unknown where appropriate rather than automatically treated as proof that a candidate lacks a skill. Scores must not be the sole basis for rejection.
+Normalize whitespace, Unicode ligatures and extraction artifacts while retaining a mapping to original text and page.
 
-8. Hidden Text, Integrity, and Link Checks
+Fuzzy matching is a verification aid, not permission to invent an exact quotation.
 
-Hidden or suspicious text
+Reject or mark uncertain claims that cannot be located in extracted text.
 
-PDF text can sometimes be present in the text layer while being difficult to see on the rendered page. The detector can inspect font size, color, opacity-related signals where available, coordinates, overlap, and differences between extracted text and rendered content. It can also flag text that resembles instructions such as 'ignore previous instructions' or attempts to force a favorable score.
+Treat document text as untrusted data; embedded prompt instructions never override system instructions.
 
-No single signal proves fraud. Accessibility text, OCR layers, formatting artifacts, and legitimate document design can produce anomalies. The report should show the finding, page, evidence, and severity, and ask the recruiter to review it.
+Display page numbers only when provenance is reliable.
 
-Links and identity limitations
+6. Data model and durable job lifecycle
 
-The platform can detect whether LinkedIn, GitHub, and portfolio URLs are included and optionally perform safe, limited reachability checks. A URL being present or accessible does not prove that it belongs to the candidate or that the work shown there was authored by them. Avoid unrestricted URL fetching; protect against server-side request forgery (SSRF).
+6.1 Suggested Render Postgres tables
 
-9. Data Storage, Privacy, and Security
+For a strict Render-only setup, adapt the Supabase-specific schema to ordinary PostgreSQL. PostgreSQL supports functions and row locking, but Supabase Storage and Supabase-specific APIs do not appear automatically on Render.
 
-Use Supabase Auth for recruiter sign-in and verify access tokens on the backend.
+Table
 
-Use Row Level Security (RLS) and organization/role checks so users can access only authorized jobs, candidates, files, and reports.
+Purpose / suggested fields
 
-Keep resume PDFs in a private storage bucket. Do not expose permanent public file URLs.
+screening_jobs
 
-Keep API keys and service credentials in server-side environment variables; never place them in frontend JavaScript or source control.
+UUID ID, status, created/updated/started/completed timestamps, attempts/max_attempts, lease owner/expiry, safe error code/message, result JSONB, retention/deletion timestamp.
 
-Treat all resume content as untrusted input. Do not execute embedded content or follow instructions found inside a resume.
+screening_inputs
 
-Use upload limits, request rate limits, safe error messages, audit events, and deletion/retention controls.
+Job ID, input type, sanitized filename, content type, size, PDF bytes or protected storage reference, checksum, timestamp.
 
-Before sending real CVs to an external model provider, review the provider's current terms and data-use settings and obtain client approval.
+job_access_tokens
 
-Document what data is stored, why it is stored, who can access it, and when it will be deleted.
+Job ID, token hash, created/expiry/revoked timestamps; never store raw token if a hash is sufficient.
 
-10. Reliability and Failure Handling
+audit_events (optional)
 
-Screening is asynchronous because PDF parsing, OCR, and external model requests can take time. The API should create a persistent screening job and return its ID promptly. A worker processes the job and updates its status in Supabase.
+Minimal security events and correlation IDs; no resume text or secrets.
 
-Use a database-backed queue with atomic job claiming, attempt counters, leases, and recovery for abandoned jobs.
+6.2 Atomic claim and leases
 
-Retry transient timeouts and rate limits with bounded backoff; avoid retry loops that can exhaust free quotas.
+One PostgreSQL function/transaction claims a queued job using row locking such as FOR UPDATE SKIP LOCKED and changes it to processing atomically.
 
-Use idempotency controls to prevent duplicate reports after a browser or network retry.
+Record lease owner and expiry. Renew long-running leases; reclaim expired leases after a worker crash.
 
-Store clear states such as queued, processing, completed, retryable failure, and failed.
+Bound attempts and use backoff; permanent failures should not retry indefinitely.
 
-Never present a missing, malformed, or partially generated AI response as a valid completed screening.
+Persist results idempotently; guard state transitions so late workers cannot overwrite valid results.
 
-Log a correlation ID and safe error code without leaking resume contents, secrets, or provider responses.
+Restrict EXECUTE on the claim function. If SECURITY DEFINER is used, set a safe search_path and qualify referenced objects.
 
-For a free Render pilot, a lightweight worker can run with the web service, but service restarts and resource limits remain possible. A persistent queue improves recovery; it does not guarantee continuous processing while a free instance is asleep. Higher-volume use may require a separate worker and a paid hosting plan.
+Use least-privilege database roles for web and worker where practical.
 
-11. Quality Assurance and Acceptance Criteria
+7. Security, privacy, and file handling
+
+Control
+
+Requirement
+
+Transport
+
+HTTPS in production; no resume/token transmission over plaintext HTTP.
+
+Tokens
+
+Cryptographically random; hash before storage; verify against correct job; define expiry/revocation; never put in URLs/logs.
+
+Database
+
+Use Render internal connection URL where appropriate, least-privilege credentials, parameterized SQL and versioned migrations.
+
+PDF validation
+
+Signature and parser checks; cap bytes/pages/count/text/time; handle encrypted, malformed, empty and scanned PDFs.
+
+Temporary files
+
+Random safe names; controlled temp directory; prevent path traversal; cleanup on success/error/shutdown.
+
+Logs
+
+No API keys, access tokens, full resumes or full JDs. Log correlation IDs and sanitized error codes.
+
+Rate limits
+
+Request/upload/concurrency quotas; trust forwarded IP headers only from configured proxies.
+
+Prompt injection
+
+Document text is data, not instructions; enforce fixed system prompts and structured-output validation.
+
+Retention
+
+Document retention duration; implement deletion and monitor cleanup failures.
+
+Hiring fairness
+
+Use job-related criteria, human review and edge-case evaluation; never present score as final hiring decision.
+
+8. Strict Render-only architecture
+
+8.1 Topology
+
+Browser --HTTPS--> Render Web Service (FastAPI + frontend)
+                         |                |
+                         |                +--> Hosted AI provider API (external)
+                         v
+                    Render Postgres <---- Render Background Worker
+                         ^
+                         +-------------- Render Cron cleanup
+
+The application services and primary database can run on Render. A hosted Groq/NVIDIA model is still an external API. 'All in Render' can cover application hosting and persisted application data, but not hosted model inference unless you self-host a model.
+
+8.2 File storage decision
+
+Render filesystems are ephemeral by default. Persistent disks preserve files but attach to a single service instance and cannot be directly shared between separate web and worker services. For a strict Render-only MVP, size-limited PDF bytes can be stored in Render Postgres for both services to access. This increases database size and is not ideal for large workloads. Do not rely on local temporary folders as durable storage. Larger-scale storage may require an external object store or a deliberately designed shared-storage approach.
+
+8.3 Changes from supplied tree
+
+Current item
+
+Strict Render-only change
+
+supabase/migrations/*.sql
+
+Adapt into ordinary PostgreSQL migrations; remove Supabase-only syntax.
+
+Supabase queue RPC
+
+Implement a PostgreSQL function on Render Postgres and call it via a DB driver.
+
+Supabase RLS
+
+Configure PostgreSQL roles/grants and, where appropriate, PostgreSQL RLS; Supabase-specific default roles are not automatically present.
+
+Supabase Storage/signed URLs
+
+Replace with size-limited DB-backed PDF storage for MVP, or explicitly accept external object storage.
+
+Supabase client
+
+Replace with PostgreSQL driver/repository layer such as psycopg or SQLAlchemy, consistent with dependencies.
+
+render.yaml
+
+Define web, worker, Postgres and cleanup cron; validate against current Blueprint schema.
+
+9. Render deployment walkthrough
+
+These are steps to perform; this document does not claim that a deployment has already been created.
+
+9.1 Prepare repository
+
+Push the correct branch to your Git provider and preserve existing work.
+
+Ensure pyproject.toml and uv.lock agree; test dependency installation with the committed lockfile.
+
+Verify the app import path, e.g. app.main:app, and static asset serving.
+
+Add tests for uploads, polling, token authorization, worker recovery and scoring.
+
+Keep .env out of Git; commit only placeholder values in .env.example.
+
+For strict Render-only hosting, remove/replace Supabase DB/storage dependencies before deployment.
+
+9.2 Create Render services
+
+Create a Render PostgreSQL database in a region close to the web and worker services.
+
+Create a Web Service connected to the repository using the runtime matching your project.
+
+Use the build command appropriate for the actual packaging setup. Example only: `uv sync --frozen`, if uv and the project configuration support it.
+
+Use a start command appropriate to the environment. Example only: `uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT` if uv is installed and app imports correctly.
+
+Create a Background Worker from the same repository, e.g. `uv run python -m app.worker`, after confirming module execution and graceful shutdown.
+
+Create a Cron Job for cleanup if supported by the selected plan/configuration. Start in dry-run mode.
+
+Set the web health check to /health. Liveness should not fail merely because the AI provider is temporarily down.
+
+Represent the services in render.yaml where supported; validate the Blueprint before relying on it.
+
+9.3 Database and migrations
+
+Set DATABASE_URL using the Render Postgres internal connection URL for same-region services when appropriate.
+
+Run migrations as a controlled release/one-off step; do not let each worker independently migrate at startup.
+
+Create job/input/token tables, indexes, constraints, state transitions and atomic claim function.
+
+Limit database privileges for web and worker; restrict claim-function execution.
+
+Test two concurrent workers and prove the same job is not actively claimed twice.
+
+9.4 Environment variables
+
+Variable
+
+Purpose
+
+DATABASE_URL
+
+Required Render Postgres connection string.
+
+AI_PROVIDER
+
+Provider selector, e.g. groq or nvidia; validate allowed values.
+
+AI_MODEL
+
+Supported model ID for selected provider.
+
+GROQ_API_KEY
+
+Server-side credential if Groq selected.
+
+NVIDIA_API_KEY
+
+Server-side credential if NVIDIA selected.
+
+TOKEN_PEPPER
+
+Optional server-side secret if the implementation uses a pepper in token hashing; define rotation policy.
+
+MAX_UPLOAD_BYTES
+
+Backend upload size limit.
+
+MAX_PDF_PAGES
+
+PDF page limit.
+
+MAX_RESUMES_PER_JOB
+
+Maximum resume count per request.
+
+JOB_LEASE_SECONDS
+
+Lease duration, tuned with heartbeat interval.
+
+JOB_MAX_ATTEMPTS
+
+Bounded retry count.
+
+RETENTION_DAYS
+
+Retention period for inputs/results.
+
+ALLOWED_ORIGINS
+
+Explicit CORS origins if cross-origin frontend is used.
+
+TRUSTED_PROXY_CIDRS
+
+Only trusted proxy ranges for forwarded client IP parsing.
+
+These are recommended names, not proof that the current code uses them. Add secrets through Render's Environment interface or supported secret mechanisms; never hard-code values in render.yaml or frontend code.
+
+9.5 Live deployment smoke test
+
+Open the Render URL and verify HTML, CSS and JavaScript load.
+
+Call GET /health and confirm no secrets or internal diagnostics are exposed.
+
+Submit an invalid file; verify a safe 4xx response and no stuck job.
+
+Submit a valid test resume and JD; verify 202 and token delivery.
+
+Poll with the correct token; verify missing/wrong token is rejected.
+
+Follow logs by correlation ID and verify queued → processing → completed/failed.
+
+Restart the worker during a test; verify lease recovery and no duplicate result write.
+
+Verify quotes/pages are grounded and percentage equals score × 10.
+
+Run cleanup dry-run and review proposed deletions before enabling deletion.
+
+Record actual tests, provider quotas, plan limits and any unresolved issues.
+
+10. Environment configuration example
+
+# .env.example — placeholders only
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DATABASE
+AI_PROVIDER=groq
+AI_MODEL=replace-with-supported-model
+GROQ_API_KEY=replace-me
+NVIDIA_API_KEY=replace-me
+MAX_UPLOAD_BYTES=10485760
+MAX_PDF_PAGES=30
+MAX_RESUMES_PER_JOB=10
+JOB_LEASE_SECONDS=180
+JOB_MAX_ATTEMPTS=3
+RETENTION_DAYS=14
+ALLOWED_ORIGINS=https://your-service.onrender.com
+
+Adjust sample limits to actual product needs, parser behavior, provider limits and hosting plan. Do not retain unused provider credentials. Validate required settings at startup and never print secret values.
+
+11. Testing and release checklist
 
 Test area
 
-Acceptance goal
+Must prove
 
-PDF handling
+Parser
 
-Valid, scanned, malformed, and oversized files produce correct results or clear errors.
+Valid PDFs succeed; bad signature, malformed/encrypted, oversized, page-limit and empty extraction are handled.
 
-Evidence traceability
+API
 
-Important match claims point to extracted text and page references where available.
+Valid input returns 202; invalid input returns proper 4xx; health check is safe.
 
-Score consistency
+Security
 
-Identical inputs and scoring configuration produce reproducible deterministic calculations.
+Wrong/missing/expired token denied; token absent from URL/logs; rate limits and proxy handling tested.
 
-Integrity detection
+Worker
 
-Known hidden-text test cases are detected and false positives are measured.
+Concurrent claim safe; expired lease reclaimed; retries bounded; duplicate completion prevented.
 
-AI robustness
+Evidence
 
-Prompt injection, malformed outputs, provider timeouts, and quota errors do not create false reports.
+Whitespace/ligature artifacts handled; fabricated quotes and wrong pages rejected.
 
-Authorization
+Scoring
 
-A recruiter cannot access another user's or organization's records without permission.
+Scores in range; weights normalize correctly; contributions reconcile; percentage = score × 10.
 
-Persistence
+AI provider
 
-Completed reports remain available after application restarts and are associated with the correct job.
+Timeout, 429, auth failure, 5xx, malformed JSON and invalid schema produce distinct safe outcomes.
 
 Privacy
 
-Private resumes are not publicly accessible and deletion follows the agreed retention policy.
+No resume text/tokens/keys in logs; retention and orphan cleanup tested.
 
-Human review
+Deployment
 
-Recruiters can inspect evidence and override or annotate recommendations with an audit trail where required.
+Web and worker start; migrations apply; end-to-end screening succeeds on Render.
 
-12. Implementation Roadmap
+Golden dataset guidance
 
-Phase 1 — Foundation: Set up the repository, Python environment, FastAPI app, Render deployment, Supabase project, authentication, and database policies.
+Use synthetic, licensed, consented, or appropriately de-identified examples. Do not commit identifiable resumes to a public repository.
 
-Phase 2 — Intake and storage: Implement job creation, PDF uploads, private storage, resume metadata, and persistent screening status.
+Store human-reviewed acceptable score ranges and evidence expectations, not one allegedly perfect universal score.
 
-Phase 3 — Parsing and matching: Build PDF extraction, OCR fallback, link extraction, requirement normalization, evidence mapping, and deterministic scoring.
+Include equivalent skill wording, different layouts, career gaps, project-based experience, scanned/poor PDFs and missing evidence.
 
-Phase 4 — AI analysis: Integrate the primary model, structured outputs, schema validation, prompt-injection defenses, and bounded retries.
+Separate deterministic unit tests from empirical quality/fairness evaluation. Passing math tests does not prove the model is fair.
 
-Phase 5 — Worker and reporting: Implement recoverable background processing, candidate report pages, history, filters, and exports.
+12. Operations and troubleshooting
 
-Phase 6 — Validation and handover: Run test suites, evaluate a human-reviewed dataset, calibrate scoring, document privacy/retention, and prepare client instructions.
+Symptom
 
-13. Deployment and Cost Expectations
+Likely cause
 
-The planned pilot uses Render for the application, Supabase Free for authentication, PostgreSQL, and private file storage, and a free-tier LLM API where the current model and provider terms permit. The Python project uses pyproject.toml and uv.lock so dependency versions are resolved reproducibly.
+Action
 
-Render's build command should install uv and synchronize the locked environment, for example: pip install uv && uv sync --frozen. The start command should launch Uvicorn on the port provided by Render. The exact configuration must be tested against the selected Python version and the final dependency groups.
+Build fails
 
-Free-tier limits, sleep behavior, storage quotas, model rate limits, and data-use terms can change. The client should approve these constraints for the pilot. The system should not promise unlimited processing, guaranteed uptime, or zero operating cost.
+Lockfile/package mismatch, missing dependency, wrong command
 
-14. Risks and Important Boundaries
+Check build logs; reproduce install; verify import path.
 
-A resume is a self-reported document. The platform cannot independently verify identity, work history, certifications, or skill proficiency from the resume alone.
+Worker won't start
 
-AI summaries and matching can be wrong. Evidence checks, test datasets, and recruiter review remain necessary.
+Wrong module command, missing env, import error
 
-Hidden-text detection is a risk signal, not a definitive fraud verdict.
+Inspect worker logs and run module locally.
 
-Scores can inherit bias from job criteria or historical data. Avoid protected attributes and unrelated personal information; periodically evaluate outcomes for unfair patterns.
+Jobs stay queued
 
-Use the system to support prioritization and structured review, not as an unreviewed automated rejection system.
+Worker unavailable, claim RPC/function error, DB permission
 
-Free hosting and free AI access are suitable for an MVP/pilot only when their operational, privacy, and quota limits are acceptable.
+Check worker heartbeat, DATABASE_URL, migrations and EXECUTE grants.
 
-15. Definition of Success
+Jobs stay processing
 
-The project is successful when a recruiter can:
+Crash and lease recovery issue
 
-Create a job screening and upload resumes without technical assistance.
+Inspect lease expiry, heartbeat and stale-job recovery.
 
-Receive readable, evidence-backed candidate reports with useful scores and clear uncertainty indicators.
+AI timeouts
 
-See profile-link presence and document-integrity findings without mistaking them for identity verification.
+Provider latency/quota/endpoint issue
 
-Find previous reports securely and reliably.
+Use bounded retries; return safe failure; inspect sanitized provider status.
 
-Understand why a candidate was prioritized and manually review the supporting evidence.
+Inconsistent score
 
-Trust that failed processing is reported honestly and that candidate data is protected.
+Rounding/weight/evidence duplication/extraction difference
 
-Closing statement
+Reproduce with fixed fixture and inspect category contributions.
 
-The platform's value is not simply generating a score. It is turning resumes into structured, explainable evidence that helps recruiters review candidates more consistently, while preserving human judgment, protecting personal data, and making technical failures visible.
+PDF differs in production
+
+Missing system dependency/runtime mismatch/limits
+
+Pin runtime and test production-like files.
+
+Files disappear
+
+Ephemeral filesystem used for durable storage
+
+Use DB-backed storage for strict MVP or explicit persistent/shared storage design.
+
+Cleanup too broad
+
+Unsafe orphan/retention query
+
+Disable deletion; use dry-run, status/lease checks and bounded batches.
+
+13. Limitations and decisions
+
+This is a project/deployment blueprint, not a verified audit of current repository contents or test results.
+
+Render-hosted app services can still call an external hosted AI provider. Fully self-hosted inference requires a separate model-serving design.
+
+Render filesystems are ephemeral by default. Persistent disks are single-service-instance and cannot be shared directly between separate web and worker services.
+
+The supplied Supabase migrations/RPC/storage must be adapted to remove Supabase entirely. Deploying current code on Render alone does not remove that dependency.
+
+Render pricing, plans, region options, database backup features and Blueprint syntax can change; confirm current options in the dashboard and docs.
+
+Keep human review for consequential hiring decisions; the score is not a final decision or probability of hire.
+
+14. Official references
+
+Consult official docs for current platform behavior. Accessed 31 October 2026.
+
+Render — Deploys: https://render.com/docs/deploys
+
+Render — Persistent disks and limitations: https://render.com/docs/disks
+
+Render — Environment variables and secrets: https://render.com/docs/configure-environment-variables
+
+Render — Blueprint YAML reference: https://render.com/docs/blueprint-spec
+
+Render — Create/connect to Render Postgres: https://render.com/docs/postgresql-creating-connecting
+
+Supabase — RLS (only if Supabase is retained): https://supabase.com/docs/guides/database/postgres/row-level-security
+
+Supabase — Private storage and signed URLs (only if Supabase is retained): https://supabase.com/docs/guides/storage/serving/downloads

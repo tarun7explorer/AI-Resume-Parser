@@ -1,250 +1,591 @@
-"""Bounded PDF text/layout extraction with an explicit Tesseract fallback."""
+"""PDF validation and page-level text extraction (app/resume_parser.py).
+
+Responsibilities
+----------------
+* Validate PDF bytes: non-empty, ``%PDF-`` signature, byte limit, page limit,
+  encryption, malformed structure, text-size limit, wall-clock limit.
+* Extract text page by page with PyMuPDF and keep page-level provenance.
+* Expose a ``ParsedDocument`` whose ``full_text`` is the single source of truth
+  for evidence verification. Every page owns a half-open offset range
+  ``[start_offset, end_offset)`` inside ``full_text``; pages are joined with a
+  single form-feed separator (``"\\f"``) that belongs to no page.
+* Identify image-only (scanned) pages. **OCR is NOT implemented.** Scanned or
+  image-only PDFs are reported as requiring OCR / manual review. No text is
+  ever invented for them.
+* Write temporary files only under a private, randomly named directory and
+  always remove them (success, failure, interpreter exit).
+
+Resume contents are untrusted data. Nothing here interprets, executes or
+follows instructions found inside a PDF.
+
+Configuration (environment variables)
+-------------------------------------
+Existing names from Overview.txt:
+    MAX_UPLOAD_BYTES   (default 10485760)
+    MAX_PDF_PAGES      (default 30)
+New names introduced by this module (add to .env.example):
+    MAX_PDF_TEXT_CHARS          (default 300000)
+    PDF_PARSE_TIMEOUT_SECONDS   (default 20)
+    MIN_EXTRACTED_CHARS         (default 50)
+"""
 
 from __future__ import annotations
 
-import math
+import atexit
+import bisect
+import hashlib
+import logging
+import os
 import re
+import shutil
+import tempfile
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from functools import cached_property
+from pathlib import Path
+from typing import Iterator, Mapping, Sequence
 
-from app.config import Settings
+try:  # PyMuPDF >= 1.24 exposes ``pymupdf``; older releases expose ``fitz``.
+    import pymupdf
+except ImportError:  # pragma: no cover - depends on installed version
+    import fitz as pymupdf  # type: ignore[no-redef]
 
-MAX_EXTRACTED_CHARS = 200_000
-MAX_LAYOUT_SPANS = 20_000
-MIN_SELECTABLE_TEXT = 35
-MAX_OCR_PIXELS = 10_000_000
+logger = logging.getLogger(__name__)
+
+try:  # keep MuPDF diagnostics out of stderr; we raise our own safe errors
+    pymupdf.TOOLS.mupdf_display_errors(False)
+except Exception:  # pragma: no cover - defensive
+    pass
+
+__all__ = [
+    "PAGE_SEPARATOR",
+    "EmptyPDFError",
+    "EncryptedPDFError",
+    "InvalidPDFSignatureError",
+    "MalformedPDFError",
+    "NoExtractableTextError",
+    "OCRRequiredError",
+    "PDFPageLimitError",
+    "PDFProcessingLimitError",
+    "PDFTextTooLargeError",
+    "PDFTooLargeError",
+    "PDFValidationError",
+    "PageText",
+    "ParsedDocument",
+    "ParserLimits",
+    "ResumeParser",
+    "active_temp_file_count",
+    "cleanup_temp_files",
+    "parse_pdf_bytes",
+    "secure_temp_pdf",
+    "sweep_stale_temp_files",
+]
+
+PAGE_SEPARATOR = "\f"
+_SIGNATURE = b"%PDF-"
+_SIGNATURE_WINDOW = 1024
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-class DocumentProcessingError(Exception):
-    """Safe processing failure with a stable code for the job queue/report."""
+# --------------------------------------------------------------------------- #
+# Exceptions (messages are safe to return to clients; they never contain
+# document content)
+# --------------------------------------------------------------------------- #
+class PDFValidationError(Exception):
+    """Base class for all PDF validation/extraction failures."""
 
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.safe_message = message
-        self.retryable = retryable
+    code: str = "pdf_invalid"
+    http_status: int = 422
+    default_message: str = "The PDF could not be processed."
+
+    def __init__(self, message: str | None = None, *, details: Mapping[str, object] | None = None):
+        self.public_message = message or self.default_message
+        self.details: dict[str, object] = dict(details or {})
+        super().__init__(self.public_message)
+
+    def to_dict(self) -> dict[str, object]:
+        """Sanitized error payload."""
+        payload: dict[str, object] = {"code": self.code, "message": self.public_message}
+        if self.details:
+            payload["details"] = self.details
+        return payload
 
 
-@dataclass(frozen=True)
+class EmptyPDFError(PDFValidationError):
+    code = "pdf_empty_file"
+    http_status = 400
+    default_message = "The uploaded file is empty."
+
+
+class InvalidPDFSignatureError(PDFValidationError):
+    code = "pdf_invalid_signature"
+    http_status = 400
+    default_message = "The uploaded file is not a PDF (missing %PDF- signature)."
+
+
+class PDFTooLargeError(PDFValidationError):
+    code = "pdf_too_large"
+    http_status = 413
+    default_message = "The PDF exceeds the maximum allowed file size."
+
+
+class PDFPageLimitError(PDFValidationError):
+    code = "pdf_too_many_pages"
+    default_message = "The PDF exceeds the maximum allowed page count."
+
+
+class EncryptedPDFError(PDFValidationError):
+    code = "pdf_encrypted"
+    default_message = "The PDF is password-protected. Upload an unprotected copy."
+
+
+class MalformedPDFError(PDFValidationError):
+    code = "pdf_malformed"
+    default_message = "The PDF is malformed or corrupted and could not be read."
+
+
+class NoExtractableTextError(PDFValidationError):
+    code = "pdf_no_extractable_text"
+    default_message = (
+        "No extractable text was found in the PDF. It may be blank or use outlined "
+        "graphics for text. Manual review is required."
+    )
+
+
+class OCRRequiredError(NoExtractableTextError):
+    code = "pdf_requires_ocr"
+    default_message = (
+        "The PDF appears to be scanned or image-only. OCR is not supported; "
+        "manual review or a text-based PDF is required."
+    )
+
+
+class PDFProcessingLimitError(PDFValidationError):
+    code = "pdf_processing_limit"
+    default_message = "The PDF took too long to process."
+
+
+class PDFTextTooLargeError(PDFValidationError):
+    code = "pdf_text_too_large"
+    default_message = "The PDF contains more text than the configured limit."
+
+
+# --------------------------------------------------------------------------- #
+# Configuration
+# --------------------------------------------------------------------------- #
+def _env_number(name: str, default: float, *, minimum: float, integer: bool) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a valid {'integer' if integer else 'number'}") from None
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ParserLimits:
+    """Resource limits applied to every PDF."""
+
+    max_bytes: int = 10_485_760
+    max_pages: int = 30
+    max_text_chars: int = 300_000
+    timeout_seconds: float = 20.0
+    min_extracted_chars: int = 50
+
+    def __post_init__(self) -> None:
+        if self.max_bytes < 1:
+            raise ValueError("max_bytes must be >= 1")
+        if self.max_pages < 1:
+            raise ValueError("max_pages must be >= 1")
+        if self.max_text_chars < 1:
+            raise ValueError("max_text_chars must be >= 1")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be > 0")
+        if self.min_extracted_chars < 0:
+            raise ValueError("min_extracted_chars must be >= 0")
+
+    @classmethod
+    def from_env(cls) -> "ParserLimits":
+        """Build limits from environment variables; raises ``ValueError`` if invalid."""
+        return cls(
+            max_bytes=int(_env_number("MAX_UPLOAD_BYTES", 10_485_760, minimum=1, integer=True)),
+            max_pages=int(_env_number("MAX_PDF_PAGES", 30, minimum=1, integer=True)),
+            max_text_chars=int(_env_number("MAX_PDF_TEXT_CHARS", 300_000, minimum=1, integer=True)),
+            timeout_seconds=float(
+                _env_number("PDF_PARSE_TIMEOUT_SECONDS", 20.0, minimum=0.001, integer=False)
+            ),
+            min_extracted_chars=int(_env_number("MIN_EXTRACTED_CHARS", 50, minimum=0, integer=True)),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Parsed document model
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True, slots=True)
 class PageText:
-    page: int
-    text: str
-    source: str
+    """Text of one page (1-based ``page_number``) and its place in ``full_text``."""
 
-
-@dataclass(frozen=True)
-class TextSpan:
-    page: int
+    page_number: int
     text: str
-    font_size: float
-    bbox: tuple[float, float, float, float]
-    color: int
-    page_width: float
-    page_height: float
+    start_offset: int
+    end_offset: int  # exclusive
+
+    @property
+    def char_count(self) -> int:
+        return len(self.text)
 
 
 @dataclass(frozen=True)
 class ParsedDocument:
-    pages: tuple[PageText, ...]
-    spans: tuple[TextSpan, ...]
+    """Extracted text with page provenance.
+
+    ``full_text`` is the canonical text: ``PAGE_SEPARATOR.join(page texts)``.
+    The page text is the PDF text layer as extracted (control characters removed,
+    line endings normalised to ``\\n``) and is never rewritten afterwards.
+    """
+
+    sha256: str
+    byte_size: int
     page_count: int
-    used_ocr: bool
-    text: str
+    pages: tuple[PageText, ...]
+    full_text: str
+    image_only_pages: tuple[int, ...] = ()
+    empty_pages: tuple[int, ...] = ()
+    warnings: tuple[str, ...] = ()
+    is_encrypted: bool = False
+    was_repaired: bool = False
+
+    @classmethod
+    def from_page_texts(
+        cls,
+        page_texts: Sequence[str],
+        *,
+        sha256: str = "",
+        byte_size: int = 0,
+        image_only_pages: Sequence[int] = (),
+        warnings: Sequence[str] = (),
+        is_encrypted: bool = False,
+        was_repaired: bool = False,
+    ) -> "ParsedDocument":
+        """Build a document (and consistent offsets) from per-page strings."""
+        pages: list[PageText] = []
+        empty: list[int] = []
+        cursor = 0
+        for number, text in enumerate(page_texts, start=1):
+            if PAGE_SEPARATOR in text:
+                raise ValueError("page text must not contain the page separator character")
+            end = cursor + len(text)
+            pages.append(PageText(number, text, cursor, end))
+            if not text.strip():
+                empty.append(number)
+            cursor = end + len(PAGE_SEPARATOR)
+        return cls(
+            sha256=sha256,
+            byte_size=byte_size,
+            page_count=len(pages),
+            pages=tuple(pages),
+            full_text=PAGE_SEPARATOR.join(page_texts),
+            image_only_pages=tuple(image_only_pages),
+            empty_pages=tuple(empty),
+            warnings=tuple(warnings),
+            is_encrypted=is_encrypted,
+            was_repaired=was_repaired,
+        )
+
+    # -- provenance helpers -------------------------------------------------- #
+    @cached_property
+    def _page_starts(self) -> tuple[int, ...]:
+        return tuple(page.start_offset for page in self.pages)
+
+    def page_for_offset(self, offset: int) -> int:
+        """Return the 1-based page containing ``offset`` of ``full_text``.
+
+        An offset that lands on a page separator maps to the preceding page.
+        """
+        if not self.pages or offset < 0 or offset >= len(self.full_text):
+            raise ValueError("offset outside document text")
+        return self.pages[bisect.bisect_right(self._page_starts, offset) - 1].page_number
+
+    def pages_for_span(self, start: int, end: int) -> tuple[int, int]:
+        """Return (first_page, last_page) covered by the half-open span ``[start, end)``."""
+        if end <= start:
+            raise ValueError("span must be non-empty")
+        return self.page_for_offset(start), self.page_for_offset(end - 1)
+
+    # -- quality indicators -------------------------------------------------- #
+    @property
+    def char_count(self) -> int:
+        return len(self.full_text)
+
+    @property
+    def extraction_complete(self) -> bool:
+        """False when at least one page was image-only (text could not be extracted)."""
+        return not self.image_only_pages
+
+    @property
+    def needs_manual_review(self) -> bool:
+        return bool(self.image_only_pages) or self.was_repaired
 
 
-def _safe_import_fitz() -> Any:
+# --------------------------------------------------------------------------- #
+# Safe temporary files
+# --------------------------------------------------------------------------- #
+_TEMP_LOCK = threading.Lock()
+_TEMP_DIR: Path | None = None
+_ACTIVE_TEMP_FILES: set[str] = set()
+
+
+def _get_temp_dir() -> Path:
+    """Private (mode 0700), randomly named directory created on first use."""
+    global _TEMP_DIR
+    with _TEMP_LOCK:
+        if _TEMP_DIR is None or not _TEMP_DIR.is_dir():
+            _TEMP_DIR = Path(tempfile.mkdtemp(prefix="resume-parser-"))
+        return _TEMP_DIR
+
+
+def _remove_quietly(path: str) -> None:
     try:
-        import fitz
-    except ImportError:
-        raise DocumentProcessingError(
-            "pdf_dependency_missing",
-            "PDF processing is unavailable. Install the project dependencies, including PyMuPDF.",
-        ) from None
-    return fitz
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("temp_file_remove_failed")
 
 
-def _is_valid_signature(content: bytes) -> bool:
-    return content.startswith(b"%PDF-") and b"%%EOF" in content[-2048:]
+@contextmanager
+def secure_temp_pdf(data: bytes) -> Iterator[str]:
+    """Write ``data`` to a randomly named temp file and always delete it.
 
-
-def _span_data(page: Any, page_number: int, *, max_remaining: int) -> tuple[list[TextSpan], int]:
-    spans: list[TextSpan] = []
-    count = 0
+    File names are generated by ``tempfile.mkstemp`` (mode 0600); no caller-
+    supplied name is ever used, so path traversal is impossible.
+    """
+    directory = _get_temp_dir()
+    fd, name = tempfile.mkstemp(prefix="pdf-", suffix=".pdf", dir=directory)
+    with _TEMP_LOCK:
+        _ACTIVE_TEMP_FILES.add(name)
     try:
-        blocks = page.get_text("dict").get("blocks", [])
-    except Exception:
-        return spans, count
-    for block in blocks:
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                text = str(span.get("text", ""))
-                if not text.strip():
-                    continue
-                if count >= max_remaining:
-                    return spans, count
-                bbox = span.get("bbox", (0, 0, 0, 0))
-                try:
-                    coords = tuple(float(value) for value in bbox)
-                    size = float(span.get("size", 0))
-                    color = int(span.get("color", 0))
-                except (TypeError, ValueError):
-                    continue
-                if len(coords) != 4 or not all(math.isfinite(value) for value in (*coords, size)):
-                    continue
-                spans.append(TextSpan(
-                    page_number, text[:1200], size, coords, color,
-                    float(page.rect.width), float(page.rect.height),
-                ))
-                count += 1
-    return spans, count
-
-
-def _tesseract(pages: list[tuple[int, Any]], settings: Settings) -> dict[int, str]:
-    fitz = _safe_import_fitz()
-    try:
-        import pytesseract
-    except ImportError:
-        raise DocumentProcessingError(
-            "ocr_wrapper_missing",
-            "This PDF appears scanned. Install pytesseract and Pillow, and install the Tesseract OCR executable.",
-        ) from None
-    try:
-        from PIL import Image
-    except ImportError:
-        raise DocumentProcessingError(
-            "ocr_image_dependency_missing",
-            "This PDF appears scanned. Install Pillow to enable OCR image conversion.",
-        ) from None
-
-    if settings.tesseract_cmd:
-        pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
-    try:
-        pytesseract.get_tesseract_version()
-    except Exception:
-        raise DocumentProcessingError(
-            "tesseract_executable_missing",
-            "This PDF appears scanned, but Tesseract OCR was not found. Install Tesseract or configure TESSERACT_CMD.",
-        ) from None
-
-    extracted: dict[int, str] = {}
-    for page_number, page in pages:
-        rect = page.rect
-        width_points, height_points = float(rect.width), float(rect.height)
-        if width_points <= 0 or height_points <= 0:
-            continue
-        scale = min(150 / 72, 4000 / width_points, 4000 / height_points)
-        scale = min(scale, math.sqrt(MAX_OCR_PIXELS / (width_points * height_points)))
-        try:
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-            image = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
-            text = pytesseract.image_to_string(
-                image,
-                lang=settings.ocr_language,
-                timeout=settings.ocr_timeout_seconds,
-            )
-        except Exception as exc:
-            error_type = type(exc).__name__
-            if error_type == "TesseractNotFoundError":
-                raise DocumentProcessingError(
-                    "tesseract_executable_missing",
-                    "Tesseract OCR was not found. Install it or configure TESSERACT_CMD.",
-                ) from None
-            if error_type == "TesseractTimeoutError":
-                raise DocumentProcessingError(
-                    "ocr_page_timeout",
-                    "OCR exceeded its per-page time limit. Reduce the PDF size or provide a text-based PDF.",
-                    retryable=True,
-                ) from None
-            raise DocumentProcessingError(
-                "ocr_processing_failed",
-                "OCR could not read a scanned page. Try a clearer PDF or paste the job details as text.",
-            ) from None
-        normalized = re.sub(r"\s+", " ", text).strip()
-        if normalized:
-            extracted[page_number] = normalized
-    return extracted
-
-
-def extract_pdf(content: bytes, settings: Settings, *, mime_type: str = "application/pdf") -> ParsedDocument:
-    """Extract a bounded PDF, OCR only sparse scanned pages, and retain page evidence."""
-
-    if mime_type not in {"application/pdf", "application/octet-stream"}:
-        raise DocumentProcessingError("invalid_pdf_mime_type", "Upload a PDF document.")
-    if not content:
-        raise DocumentProcessingError("empty_pdf", "The uploaded PDF is empty.")
-    if len(content) > settings.resume_max_bytes:
-        raise DocumentProcessingError("pdf_too_large", "The PDF exceeds the configured file-size limit.")
-    if not _is_valid_signature(content):
-        raise DocumentProcessingError("invalid_pdf_signature", "The file is not a complete PDF document.")
-
-    fitz = _safe_import_fitz()
-    try:
-        document = fitz.open(stream=content, filetype="pdf")
-    except Exception:
-        raise DocumentProcessingError("pdf_parse_failed", "The PDF is corrupt or malformed and could not be opened.") from None
-
-    try:
-        if document.is_encrypted:
-            raise DocumentProcessingError("pdf_encrypted", "Password-protected PDFs are not supported.")
-        page_count = len(document)
-        if page_count < 1:
-            raise DocumentProcessingError("pdf_empty_document", "The PDF contains no pages.")
-        if page_count > settings.pdf_max_pages:
-            raise DocumentProcessingError("pdf_page_limit", f"PDFs may contain at most {settings.pdf_max_pages} pages.")
-
-        page_texts: dict[int, PageText] = {}
-        sparse_pages: list[tuple[int, Any]] = []
-        spans: list[TextSpan] = []
-        total_chars = 0
-        for index, page in enumerate(document):
-            page_number = index + 1
-            try:
-                text = page.get_text("text")
-            except Exception:
-                raise DocumentProcessingError("pdf_page_read_failed", "A PDF page could not be read.") from None
-            text = re.sub(r"[ \t]+", " ", text).strip()
-            if text:
-                total_chars += len(text)
-                if total_chars > MAX_EXTRACTED_CHARS:
-                    raise DocumentProcessingError("pdf_text_limit", "The PDF contains too much extracted text to process safely.")
-                page_texts[page_number] = PageText(page_number, text, "text")
-            page_spans, span_count = _span_data(page, page_number, max_remaining=MAX_LAYOUT_SPANS - len(spans))
-            spans.extend(page_spans)
-            image_page = False
-            try:
-                image_page = bool(page.get_images(full=True))
-            except Exception:
-                pass
-            # A genuinely blank page is not automatically a scanned page. Only
-            # render pages for OCR when PDF image objects provide scan evidence.
-            if len(text) < MIN_SELECTABLE_TEXT and image_page:
-                sparse_pages.append((page_number, page))
-
-        used_ocr = False
-        if sparse_pages:
-            if len(sparse_pages) > settings.ocr_max_pages:
-                raise DocumentProcessingError(
-                    "ocr_page_limit",
-                    f"This scanned PDF has more than the OCR limit of {settings.ocr_max_pages} pages.",
-                )
-            recognized = _tesseract(sparse_pages, settings)
-            for page_number, text in recognized.items():
-                if text:
-                    old_text = page_texts.get(page_number)
-                    if old_text is None or len(text) > len(old_text.text):
-                        page_texts[page_number] = PageText(page_number, text, "ocr")
-                        used_ocr = True
-                    total_chars += len(text)
-                    if total_chars > MAX_EXTRACTED_CHARS:
-                        raise DocumentProcessingError("pdf_text_limit", "The PDF contains too much extracted text to process safely.")
-
-        ordered_pages = tuple(page_texts[index] for index in sorted(page_texts))
-        full_text = "\n\n".join(f"[page:{page.page}]\n{page.text}" for page in ordered_pages)
-        if len(full_text.strip()) < 20:
-            raise DocumentProcessingError(
-                "pdf_no_readable_text",
-                "No readable text was found. Try a clearer, selectable-text PDF or an OCR-ready scan.",
-            )
-        return ParsedDocument(ordered_pages, tuple(spans), page_count, used_ocr, full_text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        yield name
     finally:
+        _remove_quietly(name)
+        with _TEMP_LOCK:
+            _ACTIVE_TEMP_FILES.discard(name)
+
+
+def active_temp_file_count() -> int:
+    """Number of temp files currently registered (0 when idle)."""
+    with _TEMP_LOCK:
+        return len(_ACTIVE_TEMP_FILES)
+
+
+def cleanup_temp_files() -> None:
+    """Remove every temp file and the temp directory. Call on worker shutdown.
+
+    Registered with ``atexit``; the worker's SIGTERM handler should call it too.
+    Do not call while a parse is in flight.
+    """
+    global _TEMP_DIR
+    with _TEMP_LOCK:
+        for name in list(_ACTIVE_TEMP_FILES):
+            _remove_quietly(name)
+        _ACTIVE_TEMP_FILES.clear()
+        directory, _TEMP_DIR = _TEMP_DIR, None
+    if directory is not None:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def sweep_stale_temp_files(max_age_seconds: float = 3600.0) -> int:
+    """Delete untracked temp files older than ``max_age_seconds``; returns count."""
+    directory = _TEMP_DIR
+    if directory is None or not directory.is_dir():
+        return 0
+    removed = 0
+    cutoff = time.time() - max_age_seconds
+    with _TEMP_LOCK:
+        active = set(_ACTIVE_TEMP_FILES)
+    for entry in directory.iterdir():
+        try:
+            if str(entry) not in active and entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+atexit.register(cleanup_temp_files)
+
+
+# --------------------------------------------------------------------------- #
+# Parser
+# --------------------------------------------------------------------------- #
+def _sanitize_page_text(raw: str) -> str:
+    """Normalise line endings and drop control characters (offsets computed afterwards)."""
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    return _CONTROL_CHARS.sub("", text)
+
+
+def _has_alnum(text: str) -> bool:
+    return any(ch.isalnum() for ch in text)
+
+
+class ResumeParser:
+    """Validate a PDF and extract page-level text.
+
+    The parser is stateless and thread-safe. ``parse`` is synchronous and
+    CPU-bound; call it from the worker (or ``asyncio.to_thread``), never inline
+    in an upload handler for large files.
+    """
+
+    def __init__(self, limits: ParserLimits | None = None, *, use_temp_file: bool = True) -> None:
+        self.limits = limits or ParserLimits.from_env()
+        self._use_temp_file = use_temp_file
+
+    # -- public API ---------------------------------------------------------- #
+    def check_bytes(self, data: bytes) -> None:
+        """Cheap checks (no PDF parsing): emptiness, size, signature."""
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError("PDF data must be bytes")
+        size = len(data)
+        if size == 0:
+            raise EmptyPDFError()
+        if size > self.limits.max_bytes:
+            raise PDFTooLargeError(details={"max_bytes": self.limits.max_bytes})
+        if bytes(data[:_SIGNATURE_WINDOW]).find(_SIGNATURE) == -1:
+            raise InvalidPDFSignatureError()
+
+    def parse(self, data: bytes) -> ParsedDocument:
+        """Validate and extract text. Raises ``PDFValidationError`` subclasses."""
+        data = bytes(data) if not isinstance(data, bytes) else data
+        deadline = time.monotonic() + self.limits.timeout_seconds
+        self.check_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+
+        if self._use_temp_file:
+            with secure_temp_pdf(data) as path:
+                document = self._open(path=path)
+                try:
+                    result = self._build(document, digest, len(data), deadline)
+                finally:
+                    _close_quietly(document)
+        else:
+            document = self._open(data=data)
+            try:
+                result = self._build(document, digest, len(data), deadline)
+            finally:
+                _close_quietly(document)
+
+        logger.info(
+            "pdf_parsed",
+            extra={
+                "sha256_prefix": digest[:12],
+                "pages": result.page_count,
+                "chars": result.char_count,
+                "image_only_pages": len(result.image_only_pages),
+            },
+        )
+        return result
+
+    # -- internals ----------------------------------------------------------- #
+    @staticmethod
+    def _open(*, path: str | None = None, data: bytes | None = None):
+        try:
+            if path is not None:
+                return pymupdf.open(path, filetype="pdf")
+            return pymupdf.open(stream=data, filetype="pdf")
+        except Exception:  # PyMuPDF raises FileDataError/RuntimeError/ValueError
+            raise MalformedPDFError() from None
+
+    def _build(self, doc, digest: str, size: int, deadline: float) -> ParsedDocument:
+        limits = self.limits
+        try:
+            needs_pass = bool(doc.needs_pass)
+        except Exception:
+            raise MalformedPDFError() from None
+        if needs_pass:
+            raise EncryptedPDFError()
+
+        try:
+            page_count = int(doc.page_count)
+            is_encrypted = bool(doc.is_encrypted)
+            was_repaired = bool(getattr(doc, "is_repaired", False))
+        except Exception:
+            raise MalformedPDFError() from None
+        if page_count <= 0:
+            raise MalformedPDFError("The PDF contains no readable pages.")
+        if page_count > limits.max_pages:
+            raise PDFPageLimitError(
+                details={"max_pages": limits.max_pages, "page_count": page_count}
+            )
+
+        warnings: list[str] = []
+        if is_encrypted:
+            # Opened without a password (owner-password/permissions only).
+            warnings.append("PDF_ENCRYPTED_NO_USER_PASSWORD")
+        if was_repaired:
+            warnings.append("PDF_REPAIRED")
+
+        texts: list[str] = []
+        image_only: list[int] = []
+        total_chars = 0
+        for index in range(page_count):
+            if time.monotonic() > deadline:
+                raise PDFProcessingLimitError(details={"timeout_seconds": limits.timeout_seconds})
+            try:
+                page = doc.load_page(index)
+                text = _sanitize_page_text(page.get_text("text"))
+                has_images = False
+                if not _has_alnum(text):
+                    has_images = len(page.get_images(full=False)) > 0
+            except Exception:
+                raise MalformedPDFError() from None
+            if PAGE_SEPARATOR in text:  # defensive; sanitiser already removed \f
+                text = text.replace(PAGE_SEPARATOR, "")
+            total_chars += len(text)
+            if total_chars > limits.max_text_chars:
+                raise PDFTextTooLargeError(details={"max_text_chars": limits.max_text_chars})
+            if has_images:
+                image_only.append(index + 1)
+            texts.append(text)
+
+        if time.monotonic() > deadline:
+            raise PDFProcessingLimitError(details={"timeout_seconds": limits.timeout_seconds})
+
+        meaningful = sum(1 for text in texts for ch in text if ch.isalnum())
+        if meaningful == 0 or meaningful < limits.min_extracted_chars:
+            if image_only:
+                raise OCRRequiredError(details={"image_only_pages": image_only})
+            raise NoExtractableTextError()
+
+        if image_only:
+            warnings.append("PARTIAL_IMAGE_ONLY_PAGES")
+
+        return ParsedDocument.from_page_texts(
+            texts,
+            sha256=digest,
+            byte_size=size,
+            image_only_pages=image_only,
+            warnings=warnings,
+            is_encrypted=is_encrypted,
+            was_repaired=was_repaired,
+        )
+
+
+def _close_quietly(document) -> None:
+    try:
         document.close()
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
+def parse_pdf_bytes(data: bytes, limits: ParserLimits | None = None) -> ParsedDocument:
+    """Convenience wrapper: ``ResumeParser(limits).parse(data)``."""
+    return ResumeParser(limits).parse(data)

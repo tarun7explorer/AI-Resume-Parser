@@ -3,10 +3,148 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="0;url=/dashboard">
-  <title>TalentLens · Resume screening</title>
+  <meta name="referrer" content="no-referrer">
+  <title>Resume-Parser · AI Resume Screening</title>
+  <meta name="description" content="Compare PDF resumes against a job description with evidence-verified, deterministic scoring.">
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-  <p><a href="/dashboard">Open the TalentLens resume screening dashboard</a></p>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">RP</span>
+        <div>
+          <p class="brand-name">Resume-Parser</p>
+          <p class="brand-tag">Evidence-verified resume screening</p>
+        </div>
+      </div>
+      <p class="header-note">Decision support, not a hiring decision.</p>
+    </div>
+  </header>
+
+  <main id="main" class="container">
+    <section class="intro" aria-labelledby="intro-title">
+      <h1 id="intro-title">Screen resumes against a job description</h1>
+      <ol class="steps">
+        <li><strong>Add the job description</strong> as pasted text or one PDF.</li>
+        <li><strong>Upload resumes</strong> as PDF files.</li>
+        <li><strong>Review scorecards.</strong> Every quote shown is verified against the extracted resume text.</li>
+      </ol>
+    </section>
+
+    <!-- Global error -->
+    <div id="error-panel" class="alert alert-error" role="alert" hidden>
+      <div>
+        <p class="alert-title" id="error-title">Something went wrong</p>
+        <p id="error-message"></p>
+      </div>
+      <button type="button" id="error-restart" class="btn btn-secondary">Start a new analysis</button>
+    </div>
+
+    <!-- Upload view -->
+    <form id="screening-form" class="card" novalidate aria-labelledby="form-title">
+      <h2 id="form-title" class="visually-hidden">Screening inputs</h2>
+
+      <fieldset class="field-group">
+        <legend>1. Job description <span class="hint">Choose exactly one source</span></legend>
+
+        <div class="segmented" role="radiogroup" aria-label="Job description source">
+          <label class="segment">
+            <input type="radio" name="jd_source" value="text" checked>
+            <span>Paste text</span>
+          </label>
+          <label class="segment">
+            <input type="radio" name="jd_source" value="pdf">
+            <span>Upload PDF</span>
+          </label>
+        </div>
+
+        <div id="jd-text-panel">
+          <label for="jd-text" class="label">Job description text</label>
+          <textarea id="jd-text" rows="9" placeholder="Paste the full job description here…" aria-describedby="jd-text-help jd-text-error"></textarea>
+          <div class="field-meta">
+            <p id="jd-text-help" class="hint">Responsibilities, required skills and qualifications give the best results.</p>
+            <p id="jd-text-count" class="hint" aria-live="off">0 characters</p>
+          </div>
+          <p id="jd-text-error" class="field-error" role="alert" hidden></p>
+        </div>
+
+        <div id="jd-pdf-panel" hidden>
+          <div id="jd-dropzone" class="dropzone" data-kind="jd">
+            <p class="dz-title">Drag &amp; drop a job description PDF</p>
+            <p class="hint">or</p>
+            <button type="button" id="jd-browse" class="btn btn-secondary">Browse PDF</button>
+            <input id="jd-file-input" class="visually-hidden" type="file" accept="application/pdf,.pdf" tabindex="-1" aria-label="Job description PDF">
+          </div>
+          <ul id="jd-file-list" class="file-list" aria-label="Selected job description file"></ul>
+          <p id="jd-pdf-error" class="field-error" role="alert" hidden></p>
+        </div>
+      </fieldset>
+
+      <fieldset class="field-group">
+        <legend>2. Resumes <span class="hint" id="resume-limits"></span></legend>
+
+        <div id="resume-dropzone" class="dropzone" data-kind="resume">
+          <p class="dz-title">Drag &amp; drop resume PDFs here</p>
+          <p class="hint">or</p>
+          <button type="button" id="resume-browse" class="btn btn-secondary">Browse PDFs</button>
+          <input id="resume-file-input" class="visually-hidden" type="file" accept="application/pdf,.pdf" multiple tabindex="-1" aria-label="Resume PDFs">
+        </div>
+
+        <div class="list-header">
+          <h3 class="list-title">Selected resumes <span id="resume-count" class="badge">0</span></h3>
+          <button type="button" id="resume-clear" class="btn btn-link" hidden>Remove all</button>
+        </div>
+        <p id="resume-empty" class="empty">No resumes added yet.</p>
+        <ul id="resume-list" class="file-list" aria-label="Selected resumes"></ul>
+        <p id="resume-error" class="field-error" role="alert" hidden></p>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" id="analyze-btn" class="btn btn-primary" disabled>
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span id="analyze-label">Analyze resumes</span>
+        </button>
+        <p id="analyze-help" class="hint">Add one job description source and at least one resume to continue.</p>
+      </div>
+    </form>
+
+    <!-- Status view -->
+    <section id="status-panel" class="card status-card" aria-labelledby="status-title" hidden>
+      <div class="status-row">
+        <span class="spinner spinner-lg" aria-hidden="true"></span>
+        <div>
+          <h2 id="status-title">Analysis in progress</h2>
+          <p id="status-text" role="status" aria-live="polite">Submitting…</p>
+          <p id="status-meta" class="hint"></p>
+        </div>
+      </div>
+      <p class="hint">Keep this page open. Your access token is held only in this tab's memory, so closing or reloading the page ends access to this analysis.</p>
+    </section>
+
+    <!-- Results view -->
+    <section id="results-panel" aria-labelledby="results-title" hidden>
+      <div class="results-header">
+        <div>
+          <h2 id="results-title" tabindex="-1">Screening results</h2>
+          <p class="hint">Scores are decision support only. Human review is required for hiring decisions.</p>
+        </div>
+        <button type="button" id="new-analysis" class="btn btn-secondary">New analysis</button>
+      </div>
+      <div id="results-container"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Resume-Parser. Scores reflect job-related evidence found in extracted resume text; absence of evidence is not proof a candidate lacks a skill.</p>
+    </div>
+  </footer>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/results.js"></script>
+  <script src="/static/js/upload.js"></script>
 </body>
 </html>

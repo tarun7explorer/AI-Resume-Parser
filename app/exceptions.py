@@ -1,109 +1,27 @@
-"""Safe, consistent API error responses and exception handlers."""
-
+"""Safe, structured HTTP application errors."""
 from __future__ import annotations
 
-import logging
-from http import HTTPStatus
-from typing import Any
 
-from fastapi import Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
-
-logger = logging.getLogger(__name__)
-
-
-class ApiError(Exception):
-    """A safe error intended for an API client."""
-
-    def __init__(self, status_code: int, code: str, message: str, *, retry_after: int | None = None) -> None:
+class AppError(Exception):
+    def __init__(self, message: str = "Request failed.", *, code: str = "request_failed", status_code: int = 400, headers=None, details=None):
         super().__init__(message)
-        self.status_code = status_code
-        self.code = code
-        self.message = message
-        self.retry_after = retry_after
+        self.message, self.code, self.status_code = message, code, status_code
+        self.headers, self.details = headers, details
 
 
-def _request_id(request: Request) -> str | None:
-    return getattr(request.state, "request_id", None)
-
-
-def _error_response(
-    request: Request,
-    *,
-    status_code: int,
-    code: str,
-    message: str,
-    details: list[dict[str, Any]] | None = None,
-    headers: dict[str, str] | None = None,
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "details": details or [],
-                "request_id": _request_id(request),
-            }
-        },
-        headers=headers,
-    )
-
-
-async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-    if exc.status_code == 404 and request.url.path.startswith("/api/"):
-        return _error_response(
-            request,
-            status_code=404,
-            code="api_endpoint_not_found",
-            message="This API endpoint is not available in the running app. Restart TalentLens from the project folder and try again.",
-        )
-    try:
-        message = HTTPStatus(exc.status_code).phrase
-    except ValueError:
-        message = "Request failed"
-    return _error_response(request, status_code=exc.status_code, code="http_error", message=message)
-
-
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    # Do not echo submitted values: they may contain personal or confidential data.
-    details = [
-        {
-            "location": [str(part) for part in error.get("loc", ())],
-            "message": "Invalid value",
-            "type": str(error.get("type", "value_error")),
-        }
-        for error in exc.errors()
-    ]
-    return _error_response(
-        request,
-        status_code=422,
-        code="validation_error",
-        message="Request validation failed",
-        details=details,
-    )
-
-
-async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
-    return _error_response(
-        request,
-        status_code=exc.status_code,
-        code=exc.code,
-        message=exc.message,
-        headers={"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None,
-    )
-
-
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error(
-        "Unhandled request exception",
-        extra={"request_id": _request_id(request), "exception_type": type(exc).__name__},
-    )
-    return _error_response(
-        request,
-        status_code=500,
-        code="internal_error",
-        message="An unexpected error occurred",
-    )
+class ValidationFailed(AppError):
+    def __init__(self, message="The request is invalid.", **kw): super().__init__(message, code="validation_error", status_code=422, **kw)
+class PayloadTooLarge(AppError):
+    def __init__(self, message="The request is too large.", **kw): super().__init__(message, code="payload_too_large", status_code=413, **kw)
+class UnsupportedMediaType(AppError):
+    def __init__(self, message="Unsupported media type.", **kw): super().__init__(message, code="unsupported_media_type", status_code=415, **kw)
+class LengthRequired(AppError):
+    def __init__(self, message="Content-Length is required.", **kw): super().__init__(message, code="length_required", status_code=411, **kw)
+class NotFound(AppError):
+    def __init__(self, message="Resource not found.", **kw): super().__init__(message, code="not_found", status_code=404, **kw)
+class AuthenticationRequired(AppError):
+    def __init__(self, message="A valid bearer token is required.", **kw): super().__init__(message, code="authentication_required", status_code=401, **kw)
+class RateLimited(AppError):
+    def __init__(self, message="Too many requests.", **kw): super().__init__(message, code="rate_limited", status_code=429, **kw)
+class ServiceUnavailable(AppError):
+    def __init__(self, message="Service unavailable.", *, code="service_unavailable", **kw): super().__init__(message, code=code, status_code=503, **kw)

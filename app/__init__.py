@@ -1,1 +1,3 @@
-"""Application package for the resume screening service."""
+"""Resume-Parser application package."""
+
+__version__ = "0.1.0"

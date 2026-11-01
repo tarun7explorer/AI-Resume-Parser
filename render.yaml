@@ -1,17 +1,71 @@
 services:
   - type: web
-    name: resume-parser
-    runtime: docker
-    plan: free
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
+    name: resume-parser-web
+    runtime: python
+    plan: 0.5c-512mb
+    buildCommand: pip install uv && if [ -f uv.lock ] && [ ! -s uv.lock ]; then mv uv.lock /tmp/uv.lock.empty; fi && uv lock && uv sync --frozen --no-dev
+    preDeployCommand: uv run python -m app.migrate
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: APP_ENV
         value: production
-      - key: LOG_LEVEL
-        value: INFO
-      - key: SCREENING_WORKER_ENABLED
-        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: resume-parser-db
+          property: connectionString
+      - key: TOKEN_PEPPER
+        generateValue: true
+      - key: AI_PROVIDER
+        value: groq
+      - key: AI_MODEL
+        sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: RETENTION_DAYS
+        value: "14"
+      - key: MAX_UPLOAD_BYTES
+        value: "10485760"
+      - key: MAX_RESUMES_PER_JOB
+        value: "10"
+      - key: ALLOWED_ORIGINS
+        value: https://resume-parser-web.onrender.com
+  - type: worker
+    name: resume-parser-worker
+    runtime: python
+    plan: 0.5c-512mb
+    buildCommand: pip install uv && if [ -f uv.lock ] && [ ! -s uv.lock ]; then mv uv.lock /tmp/uv.lock.empty; fi && uv lock && uv sync --frozen --no-dev
+    startCommand: uv run python -m app.worker
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: resume-parser-db
+          property: connectionString
+      - key: TOKEN_PEPPER
+        fromService:
+          type: web
+          name: resume-parser-web
+          envVarKey: TOKEN_PEPPER
+      - key: AI_PROVIDER
+        value: groq
+      - key: AI_MODEL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+  - type: cron
+    name: resume-parser-cleanup
+    runtime: python
+    schedule: "0 3 * * *"
+    buildCommand: pip install uv && if [ -f uv.lock ] && [ ! -s uv.lock ]; then mv uv.lock /tmp/uv.lock.empty; fi && uv lock && uv sync --frozen --no-dev
+    startCommand: uv run python scripts/cleanup.py --delete --limit 100
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: resume-parser-db
+          property: connectionString
+      - key: RETENTION_DAYS
+        value: "14"
+
+databases:
+  - name: resume-parser-db
+    plan: 0.1c-256mb
